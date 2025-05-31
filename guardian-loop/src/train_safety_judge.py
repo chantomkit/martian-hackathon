@@ -15,9 +15,33 @@ from pathlib import Path
 import json
 import argparse
 from typing import Dict, List
+import multiprocessing
+
+# Set multiprocessing start method to 'spawn'
+if __name__ == '__main__':
+    multiprocessing.set_start_method('spawn', force=True)
 
 from models.safety_judge import SafetyJudge, SafetyJudgeConfig
 
+class SafetyDataset(Dataset):
+    """Custom dataset for safety data"""
+    def __init__(self, data):
+        self.data = data
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        item = self.data[idx]
+        return {
+            'prompt': item['prompt'],
+            'label': item['label']
+        }
+
+def load_json_data(filepath):
+    """Load data from JSON file"""
+    with open(filepath, 'r') as f:
+        return json.load(f)
 
 class SafetyJudgeTrainer:
     """Trainer for the Safety Judge model"""
@@ -25,18 +49,29 @@ class SafetyJudgeTrainer:
     def __init__(self, 
                  model: SafetyJudge,
                  tokenizer: AutoTokenizer,
-                 train_dataset,
-                 val_dataset,
+                 train_data,
+                 val_data,
                  config: Dict):
         self.model = model
         self.tokenizer = tokenizer
-        self.train_dataset = train_dataset
-        self.val_dataset = val_dataset
+        self.train_dataset = SafetyDataset(train_data)
+        self.val_dataset = SafetyDataset(val_data)
         self.config = config
         
         # Setup device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Using device: {self.device}")
+        if torch.cuda.is_available():
+            print(f"GPU: {torch.cuda.get_device_name()}")
+        
+        # Move model to device and get its dtype
         self.model.to(self.device)
+        self.dtype = next(self.model.parameters()).dtype
+        print(f"Model dtype: {self.dtype}")
+        
+        # Setup mixed precision training
+        self.use_amp = self.dtype == torch.float16 and torch.cuda.is_available()
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
         
         # Initialize MI visualizer if requested
         self.mi_visualizer = None
@@ -81,8 +116,8 @@ class SafetyJudgeTrainer:
         self.criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
         
         # Setup data loaders
-        self.train_loader = self._create_dataloader(train_dataset, shuffle=True)
-        self.val_loader = self._create_dataloader(val_dataset, shuffle=False)
+        self.train_loader = self._create_dataloader(self.train_dataset, shuffle=True)
+        self.val_loader = self._create_dataloader(self.val_dataset, shuffle=False)
         
         # Cosine learning rate scheduler with warmup
         num_training_steps = len(self.train_loader) * config['num_epochs']
@@ -106,16 +141,24 @@ class SafetyJudgeTrainer:
         """Create a DataLoader for the dataset"""
         def collate_fn(batch):
             prompts = [item['prompt'] for item in batch]
-            labels = torch.tensor([item['label'] for item in batch])
+            labels = torch.tensor([item['label'] for item in batch], device=self.device, dtype=torch.long)
             
-            # Tokenize prompts
-            encoded = self.tokenizer(
+            # Tokenize prompts using encode_plus instead of direct call
+            encoded = self.tokenizer.batch_encode_plus(
                 prompts,
                 padding=True,
                 truncation=True,
                 max_length=self.config['max_length'],
                 return_tensors='pt'
             )
+            
+            # Move tensors to GPU with correct dtypes:
+            # - input_ids: long (for embedding lookup)
+            # - attention_mask: bool
+            encoded = {
+                'input_ids': encoded['input_ids'].to(device=self.device, dtype=torch.long),
+                'attention_mask': encoded['attention_mask'].to(device=self.device, dtype=torch.bool),
+            }
             
             return {
                 'input_ids': encoded['input_ids'],
@@ -128,7 +171,7 @@ class SafetyJudgeTrainer:
             batch_size=self.config['batch_size'],
             shuffle=shuffle,
             collate_fn=collate_fn,
-            num_workers=2
+            num_workers=0  # Disable multiprocessing for now to avoid CUDA issues
         )
     
     def train_epoch(self) -> Dict[str, float]:
@@ -211,26 +254,26 @@ class SafetyJudgeTrainer:
         
         with torch.no_grad():
             for batch in tqdm(self.val_loader, desc="Validation"):
-                # Move to device
-                input_ids = batch['input_ids'].to(self.device)
-                attention_mask = batch['attention_mask'].to(self.device)
-                labels = batch['labels'].to(self.device)
+                # Forward pass with automatic mixed precision
+                with torch.amp.autocast(device_type='cuda', enabled=self.use_amp):
+                    outputs = self.model(batch['input_ids'], batch['attention_mask'])
+                    logits = outputs['logits'] if isinstance(outputs, dict) else outputs
+                    
+                    # Calculate loss
+                    loss = self.criterion(logits, batch['labels'])
+                    total_loss += loss.item()
+                    
+                    # Get predictions and probabilities
+                    probs = torch.softmax(logits, dim=1)
+                    preds = torch.argmax(logits, dim=1)
                 
-                # Forward pass
-                outputs = self.model(input_ids, attention_mask)
-                logits = outputs['logits'] if isinstance(outputs, dict) else outputs
-                
-                # Calculate loss
-                loss = self.criterion(logits, labels)
-                total_loss += loss.item()
-                
-                # Get predictions and probabilities
-                probs = torch.softmax(logits, dim=1)
-                preds = torch.argmax(logits, dim=1)
-                
+                # Move results to CPU and convert to numpy
                 all_preds.extend(preds.cpu().numpy())
                 all_probs.extend(probs[:, 1].cpu().numpy())  # Probability of unsafe
-                all_labels.extend(labels.cpu().numpy())
+                all_labels.extend(batch['labels'].cpu().numpy())
+                
+                # Clear memory
+                del outputs, logits, probs, preds
         
         # Calculate metrics
         metrics = self._calculate_metrics(all_labels, all_preds, all_probs)
@@ -316,11 +359,9 @@ class SafetyJudgeTrainer:
                 print(f"Saved best model with validation AUC/F1: {val_metric:.4f}")
             else:
                 patience_counter += 1
-            
-            # Early stopping
-            if patience_counter >= self.config.get('patience', 5):
-                print(f"Early stopping after {epoch + 1} epochs")
-                break
+                if patience_counter >= self.config.get('patience', 3):
+                    print("Early stopping triggered")
+                    break
         
         # Save final model
         self.save_checkpoint(
@@ -477,7 +518,11 @@ def main():
                        help='Learning rate for probe head')
     parser.add_argument('--num_epochs', type=int, default=15,  # More epochs for 8K samples
                        help='Number of training epochs')
-    parser.add_argument('--max_length', type=int, default=512,
+    parser.add_argument('--learning_rate', type=float, default=2e-5,
+                       help='Learning rate')
+    parser.add_argument('--weight_decay', type=float, default=0.01,
+                       help='Weight decay')
+    parser.add_argument('--max_length', type=int, default=256,
                        help='Maximum sequence length')
     parser.add_argument('--freeze_layers', type=int, default=20,  # Unfreeze last 12 layers
                        help='Number of layers to freeze in base model')
@@ -538,28 +583,49 @@ def main():
         probe_hidden_size=128,  # Smaller for 8K dataset
         dropout_rate=0.2  # Higher dropout
     )
+    model = SafetyJudge(config)
+    tokenizer = AutoTokenizer.from_pretrained(args.base_model)
     
-    print("Initializing Safety Judge model...")
-    model = SafetyJudge(model_config)
-    
-    # Initialize tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model_config.base_model)
+    # Configure padding token for the tokenizer
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+    
+    # Enable memory optimizations
+    if args.gradient_checkpointing and hasattr(model.base_model, 'gradient_checkpointing_enable'):
+        model.base_model.gradient_checkpointing_enable()
+        model.base_model.enable_input_require_grads()
+    
+    # Use memory efficient attention if available
+    if hasattr(model.base_model.config, 'use_memory_efficient_attention'):
+        model.base_model.config.use_memory_efficient_attention = True
+    
+    # Configure model to use flash attention if available
+    if hasattr(model.base_model.config, 'attn_implementation'):
+        model.base_model.config.attn_implementation = "flash_attention_2"
     
     # Create trainer
+    trainer_config = {
+        'batch_size': args.batch_size,
+        'num_epochs': args.num_epochs,
+        'learning_rate': args.learning_rate,
+        'weight_decay': args.weight_decay,
+        'max_length': args.max_length,
+        'use_wandb': args.use_wandb,
+        'output_dir': args.output_dir
+    }
+    
     trainer = SafetyJudgeTrainer(
         model=model,
         tokenizer=tokenizer,
         train_dataset=train_dataset,
         val_dataset=val_dataset,
-        config=config
+        config=trainer_config
     )
     
-    # Train
-    print("Starting training...")
+    # Train the model
     trainer.train()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main() 

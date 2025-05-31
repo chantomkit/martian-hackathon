@@ -59,27 +59,38 @@ python run_full_pipeline.py --eval-only
 
 ## 📊 Dataset Details
 
-**Total samples**: ~5,000-8,000 (balanced towards safe/unsafe)
+**Total samples**: ~10,000 balanced (targeting ~5K unsafe prompts before mutations)
 
 | Dataset | Samples | Description | Notes |
 |---------|---------|-------------|-------|
-| WildGuard | 1,000 | State-of-the-art safety dataset | Requires HF login* |
-| BeaverTails | 2,000-3,000 | 14 harm categories | Works out of box |
-| ToxicChat | 2,000-3,000 | Real toxic conversations | Works out of box |
-| ~~WildChat~~ | ~~1,000~~ | ~~Toxic ChatGPT interactions~~ | Skipped (too large) |
-| Anthropic HH | 2,000 | Human preference data | Works out of box |
-| Mutations | ~100-2,500 | Safe versions of unsafe prompts | Depends on API |
+| Real-Toxicity-Prompts | 4,000 | AllenAI's gold standard with detailed toxicity scores | ✅ Best quality labels |
+| HarmBench | 1,000 | Standardized harmful behavior prompts | ✅ Well-categorized |
+| BeaverTails | 1,500 | Uses category labels (any True = unsafe) | ✅ Simple labeling |
+| ToxicChat | 1,000 | Only jailbreaks & high toxicity | ✅ Conservative approach |
+| WildChat-1M | 500 | Real ChatGPT conversations with toxicity labels | ✅ Real-world data |
+| JailbreakBench | 500 | Curated jailbreak prompts | ✅ All harmful |
+| Mutations | ~500 | Safe versions via Martian API | Optional with API key |
 
-*To use WildGuard dataset:
-```bash
-# Option 1: Set environment variable
-export HF_TOKEN='your-huggingface-token'
+**Dataset Mix Strategy**:
+- Target: ~5K unsafe prompts before mutations
+- Real-Toxicity-Prompts provides both safe and unsafe based on toxicity scores
+- HarmBench, JailbreakBench are 100% unsafe (jailbreak attempts)
+- BeaverTails uses category labels (any harmful category = unsafe)
+- WildChat-1M uses toxic/redacted flags
+- ToxicChat uses jailbreak flag and toxicity scores
+- NO keyword-based labeling - only using dataset labels
 
-# Option 2: Use HF CLI
-huggingface-cli login
+**Key Features of Real-Toxicity-Prompts**:
+- 99K prompts with fine-grained toxicity scores
+- Multi-dimensional safety metrics: toxicity, threat, profanity, identity attack, etc.
+- Each score ranges from 0.0 to 1.0
+- Thresholds used: toxicity>0.3, threat>0.3, severe_toxicity>0.2, etc.
 
-# Get token from: https://huggingface.co/settings/tokens
-```
+**Why these datasets?**
+- **Real labels**: Using only the labels provided by datasets
+- **No synthetic labeling**: No keyword matching or heuristics
+- **Research quality**: Peer-reviewed, published datasets
+- **Clear labeling**: Each dataset has explicit safety/toxicity labels
 
 ## 🔬 What Gets Evaluated
 

@@ -117,6 +117,37 @@ Risk Categories × Evasion Techniques = 64 cells
 # ROI: 2000%+ at scale
 ```
 
+## 📚 Datasets Used
+
+### Dataset Characteristics
+
+Our safety judge is trained on multiple datasets, each with different labeling approaches:
+
+| Dataset | What it Labels | Suitable for Prompt-Only Detection | Notes |
+|---------|---------------|-----------------------------------|-------|
+| **ToxicChat** | User prompts | ✅ Yes | 10K real user prompts with toxicity labels |
+| **JailbreakBench** | User prompts | ✅ Yes | Curated jailbreak attempts |
+| **Real-Toxicity-Prompts** | User prompts | ✅ Yes | 99K prompts with continuous toxicity scores |
+| **BeaverTails** | QA pairs | ⚠️ Limited | Labels entire interactions, not just prompts |
+| **WildChat** | Conversations | ⚠️ Limited | Labels apply to full conversations |
+
+### Important Note on BeaverTails
+
+⚠️ **BeaverTails labels entire question-answer pairs**, not individual prompts. A potentially harmful prompt might be labeled as "safe" if the response adequately mitigates the harm. This dataset is designed for QA-moderation, not prompt-only toxicity detection. We use category labels as a proxy, but this is an approximation.
+
+### Data Preparation
+
+```bash
+# Prepare safety datasets with proper filtering
+python -m src.data.prepare_safety_data
+
+# This will:
+# - Load datasets optimized for prompt-only detection
+# - Create balanced train/val/test splits
+# - Generate safe mutations of unsafe prompts
+# - Output to data/prepared/
+```
+
 ## 📊 Results
 
 ### Safety Judge Performance

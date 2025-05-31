@@ -4,7 +4,7 @@ Training script for the Safety Judge
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup, get_cosine_schedule_with_warmup
 from datasets import load_from_disk
 import numpy as np
@@ -25,8 +25,14 @@ from models.safety_judge import SafetyJudge, SafetyJudgeConfig
 
 class SafetyDataset(Dataset):
     """Custom dataset for safety data"""
-    def __init__(self, data):
-        self.data = data
+    def __init__(self, data_or_path):
+        if isinstance(data_or_path, str):
+            # Load from JSON file
+            with open(data_or_path, 'r') as f:
+                self.data = json.load(f)
+        else:
+            # Use data directly
+            self.data = data_or_path
     
     def __len__(self):
         return len(self.data)
@@ -182,61 +188,49 @@ class SafetyJudgeTrainer:
         all_labels = []
         
         # Gradient accumulation for effective larger batch size
-        accumulation_steps = self.config.get('gradient_accumulation_steps', 2)
-        
-        # Mixed precision training for efficiency
-        scaler = torch.cuda.amp.GradScaler() if self.device.type == 'cuda' else None
+        accumulation_steps = self.config.get('gradient_accumulation_steps', 1)
         
         progress_bar = tqdm(self.train_loader, desc="Training")
         
         for batch_idx, batch in enumerate(progress_bar):
-            # Move to device
-            input_ids = batch['input_ids'].to(self.device)
-            attention_mask = batch['attention_mask'].to(self.device)
-            labels = batch['labels'].to(self.device)
-            
-            # Forward pass with mixed precision
-            if scaler is not None:
-                with torch.cuda.amp.autocast():
-                    outputs = self.model(input_ids, attention_mask)
-                    logits = outputs['logits'] if isinstance(outputs, dict) else outputs
-                    loss = self.criterion(logits, labels)
-            else:
-                outputs = self.model(input_ids, attention_mask)
+            # Forward pass with automatic mixed precision
+            with torch.amp.autocast(device_type='cuda', enabled=self.use_amp):
+                outputs = self.model(batch['input_ids'], batch['attention_mask'])
                 logits = outputs['logits'] if isinstance(outputs, dict) else outputs
-                loss = self.criterion(logits, labels)
+                loss = self.criterion(logits, batch['labels'])
+                # Scale loss for gradient accumulation
+                loss = loss / accumulation_steps
             
-            # Scale loss for gradient accumulation
-            loss = loss / accumulation_steps
+            # Backward pass with gradient scaling
+            self.scaler.scale(loss).backward()
             
-            # Backward pass
-            if scaler is not None:
-                scaler.scale(loss).backward()
-            else:
-                loss.backward()
-            
-            # Update weights every accumulation_steps
+            # Update weights every accumulation_steps or at the end
             if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(self.train_loader):
-                if scaler is not None:
-                    scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-                    scaler.step(self.optimizer)
-                    scaler.update()
-                else:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-                    self.optimizer.step()
-                
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.probe_head.parameters(), 1.0)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
                 self.scheduler.step()
-                self.optimizer.zero_grad()
+                self.optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
             
             # Track metrics
             total_loss += loss.item() * accumulation_steps
-            preds = torch.argmax(logits, dim=1)
-            all_preds.extend(preds.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
+            with torch.no_grad():
+                preds = torch.argmax(logits, dim=1)
+                all_preds.extend(preds.cpu().numpy())
+                all_labels.extend(batch['labels'].cpu().numpy())
             
-            # Update progress bar
-            progress_bar.set_postfix({'loss': loss.item() * accumulation_steps})
+            # Update progress bar with GPU memory info
+            if torch.cuda.is_available():
+                mem_info = f"GPU mem: {torch.cuda.memory_allocated() / 1024**2:.0f}MB"
+                progress_bar.set_postfix({'loss': loss.item() * accumulation_steps, 'mem': mem_info})
+            else:
+                progress_bar.set_postfix({'loss': loss.item() * accumulation_steps})
+            
+            # Explicitly clear some memory every few batches
+            if batch_idx % 10 == 0:
+                del outputs, logits, loss
+                torch.cuda.empty_cache()
         
         # Calculate metrics
         metrics = self._calculate_metrics(all_labels, all_preds)
@@ -253,7 +247,7 @@ class SafetyJudgeTrainer:
         all_labels = []
         
         with torch.no_grad():
-            for batch in tqdm(self.val_loader, desc="Validation"):
+            for batch_idx, batch in enumerate(tqdm(self.val_loader, desc="Validation")):
                 # Forward pass with automatic mixed precision
                 with torch.amp.autocast(device_type='cuda', enabled=self.use_amp):
                     outputs = self.model(batch['input_ids'], batch['attention_mask'])
@@ -272,8 +266,10 @@ class SafetyJudgeTrainer:
                 all_probs.extend(probs[:, 1].cpu().numpy())  # Probability of unsafe
                 all_labels.extend(batch['labels'].cpu().numpy())
                 
-                # Clear memory
-                del outputs, logits, probs, preds
+                # Clear memory periodically
+                if batch_idx % 10 == 0:
+                    del outputs, logits, probs, preds, loss
+                    torch.cuda.empty_cache()
         
         # Calculate metrics
         metrics = self._calculate_metrics(all_labels, all_preds, all_probs)
@@ -518,8 +514,6 @@ def main():
                        help='Learning rate for probe head')
     parser.add_argument('--num_epochs', type=int, default=15,  # More epochs for 8K samples
                        help='Number of training epochs')
-    parser.add_argument('--learning_rate', type=float, default=2e-5,
-                       help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=0.01,
                        help='Weight decay')
     parser.add_argument('--max_length', type=int, default=256,
@@ -544,7 +538,7 @@ def main():
         'learning_rate': args.learning_rate,
         'num_epochs': args.num_epochs,
         'max_length': args.max_length,
-        'weight_decay': 0.1,  # Higher weight decay for regularization
+        'weight_decay': args.weight_decay,
         'patience': 5,  # More patience for convergence
         'output_dir': args.output_dir,
         'use_wandb': args.use_wandb,
@@ -555,20 +549,6 @@ def main():
     print(f"Effective batch size: {args.batch_size * args.gradient_accumulation_steps}")
     
     # Load dataset - use JSON files directly
-    import json
-    from torch.utils.data import Dataset
-    
-    class SafetyDataset(Dataset):
-        def __init__(self, file_path):
-            with open(file_path, 'r') as f:
-                self.data = json.load(f)
-        
-        def __len__(self):
-            return len(self.data)
-        
-        def __getitem__(self, idx):
-            return self.data[idx]
-    
     print(f"Loading dataset from {args.data_dir}")
     train_dataset = SafetyDataset('./data/prepared/train.json')
     val_dataset = SafetyDataset('./data/prepared/val.json')
@@ -579,48 +559,28 @@ def main():
     model_config = SafetyJudgeConfig(
         freeze_layers=args.freeze_layers,
         max_length=args.max_length,
-        use_pooler=args.pooling,
+        pooling=args.pooling,
         probe_hidden_size=128,  # Smaller for 8K dataset
         dropout_rate=0.2  # Higher dropout
     )
-    model = SafetyJudge(config)
-    tokenizer = AutoTokenizer.from_pretrained(args.base_model)
+    model = SafetyJudge(model_config)
+    
+    # Initialize tokenizer
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B-Instruct")
     
     # Configure padding token for the tokenizer
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
     
-    # Enable memory optimizations
-    if args.gradient_checkpointing and hasattr(model.base_model, 'gradient_checkpointing_enable'):
-        model.base_model.gradient_checkpointing_enable()
-        model.base_model.enable_input_require_grads()
-    
-    # Use memory efficient attention if available
-    if hasattr(model.base_model.config, 'use_memory_efficient_attention'):
-        model.base_model.config.use_memory_efficient_attention = True
-    
-    # Configure model to use flash attention if available
-    if hasattr(model.base_model.config, 'attn_implementation'):
-        model.base_model.config.attn_implementation = "flash_attention_2"
-    
     # Create trainer
-    trainer_config = {
-        'batch_size': args.batch_size,
-        'num_epochs': args.num_epochs,
-        'learning_rate': args.learning_rate,
-        'weight_decay': args.weight_decay,
-        'max_length': args.max_length,
-        'use_wandb': args.use_wandb,
-        'output_dir': args.output_dir
-    }
-    
     trainer = SafetyJudgeTrainer(
         model=model,
         tokenizer=tokenizer,
-        train_dataset=train_dataset,
-        val_dataset=val_dataset,
-        config=trainer_config
+        train_data=train_dataset,
+        val_data=val_dataset,
+        config=config
     )
     
     # Train the model

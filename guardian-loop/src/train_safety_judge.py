@@ -82,7 +82,7 @@ class SafetyJudgeTrainer:
         # Initialize MI visualizer if requested
         self.mi_visualizer = None
         if config.get('visualize_during_training', False):
-            from src.mi_tools.visualization import SafetyJudgeMIVisualizer
+            from mi_tools.visualization import SafetyJudgeMIVisualizer
             self.mi_visualizer = SafetyJudgeMIVisualizer(model, tokenizer)
             self.visualization_dir = Path(config['output_dir']) / 'training_visualizations'
             self.visualization_dir.mkdir(parents=True, exist_ok=True)
@@ -559,7 +559,6 @@ def main():
     model_config = SafetyJudgeConfig(
         freeze_layers=args.freeze_layers,
         max_length=args.max_length,
-        pooling=args.pooling,
         probe_hidden_size=128,  # Smaller for 8K dataset
         dropout_rate=0.2  # Higher dropout
     )

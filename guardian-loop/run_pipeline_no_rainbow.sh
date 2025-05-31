@@ -16,7 +16,7 @@ echo "Rainbow adversarial testing is SKIPPED for faster iteration"
 echo ""
 
 # Run the pipeline with visualizations and no Rainbow
-python run_full_pipeline.py \
+python guardian-loop/run_full_pipeline.py \
     --visualize-training \
     --skip-rainbow
 

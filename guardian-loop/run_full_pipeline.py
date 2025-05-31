@@ -83,7 +83,7 @@ def main():
     # Step 1: Data Preparation
     if not args.skip_data_prep and not args.demo_only and not args.eval_only:
         run_command(
-            "python src/data/prepare_safety_data.py",
+            "python guardian-loop/src/data/prepare_safety_data.py",
             "Preparing datasets with safe mutations"
         )
         print("\n📊 Dataset Statistics:")
@@ -97,7 +97,7 @@ def main():
     
     # Step 2: Training
     if not args.skip_training and not args.demo_only and not args.eval_only:
-        cmd = ("python src/train_safety_judge.py --batch_size 8 --gradient_accumulation_steps 4 "
+        cmd = ("python guardian-loop/src/train_safety_judge.py --batch_size 8 --gradient_accumulation_steps 4 "
                "--learning_rate 2e-4 --num_epochs 15 --freeze_layers 20 --pooling mean")
         
         if args.visualize_training:
@@ -116,7 +116,7 @@ def main():
     if not args.demo_only:
         # Basic evaluation
         run_command(
-            "python src/evaluate_safety.py",
+            "python guardian-loop/src/evaluate_safety.py",
             "Evaluating model performance"
         )
         
@@ -125,19 +125,19 @@ def main():
         
         # Token attribution heatmaps
         run_command(
-            "python src/mi_tools/visualization.py --mode token_attribution --num_samples 10",
+            "python guardian-loop/src/mi_tools/visualization.py --mode token_attribution --num_samples 10",
             "Creating token attribution heatmaps"
         )
         
         # Attention patterns
         run_command(
-            "python src/mi_tools/visualization.py --mode attention_patterns --num_samples 10",
+            "python guardian-loop/src/mi_tools/visualization.py --mode attention_patterns --num_samples 10",
             "Analyzing attention patterns"
         )
         
         # Layer activations
         run_command(
-            "python src/mi_tools/visualization.py --mode layer_activations --num_samples 10",
+            "python guardian-loop/src/mi_tools/visualization.py --mode layer_activations --num_samples 10",
             "Visualizing layer activations"
         )
         
@@ -146,7 +146,7 @@ def main():
     # Step 4: Martian Integration Test
     if not args.demo_only and not args.eval_only:
         run_command(
-            "python src/martian/test_integration.py",
+            "python guardian-loop/src/martian/test_integration.py",
             "Testing Martian API integration"
         )
     
@@ -182,7 +182,7 @@ def main():
         print("   - Create vulnerability report")
         
         run_command(
-            "python src/adversarial/rainbow_loop.py --iterations 100 --output_dir outputs/rainbow",
+            "python guardian-loop/src/adversarial/rainbow_loop.py --iterations 100 --output_dir outputs/rainbow",
             "Running Rainbow adversarial testing"
         )
         

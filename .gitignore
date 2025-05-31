@@ -32,4 +32,4 @@ data/
 guardian-loop/.DS_Store
 guardian-loop/src/.DS_Store
 .DS_Store
-.pt
+*.pt

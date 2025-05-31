@@ -38,24 +38,35 @@ def main():
                        help='Skip data preparation if already done')
     parser.add_argument('--skip-training', action='store_true',
                        help='Skip training if model already exists')
+    parser.add_argument('--skip-rainbow', action='store_true',
+                       help='Skip Rainbow adversarial testing')
     parser.add_argument('--demo-only', action='store_true',
                        help='Only run the demo')
     parser.add_argument('--eval-only', action='store_true',
                        help='Only run evaluation')
+    parser.add_argument('--visualize-training', action='store_true',
+                       help='Create MI visualizations during training')
     args = parser.parse_args()
     
     print("""
     🛡️  Guardian-Loop Full Pipeline Runner
     ====================================
     This will run:
-    1. Data preparation (with GPT-4o mutations)
-    2. Safety judge training
+    1. Data preparation (with mutations)
+    2. Safety judge training (with optional MI visualizations)
     3. Model evaluation
     4. MI visualizations
     5. Interactive demo
     
     Note: Rainbow adversarial testing is skipped
     """)
+    
+    if args.skip_rainbow:
+        print("    ⚠️  Rainbow adversarial testing: SKIPPED")
+    else:
+        print("    6. Rainbow adversarial testing")
+    
+    print("")
     
     # Check for API key
     if not os.getenv('MARTIAN_API_KEY'):
@@ -86,10 +97,20 @@ def main():
     
     # Step 2: Training
     if not args.skip_training and not args.demo_only and not args.eval_only:
+        cmd = ("python src/train_safety_judge.py --batch_size 8 --gradient_accumulation_steps 4 "
+               "--learning_rate 2e-4 --num_epochs 15 --freeze_layers 20 --pooling mean")
+        
+        if args.visualize_training:
+            cmd += " --visualize_during_training --visualization_interval 3"
+            
         run_command(
-            "python src/train_safety_judge.py --epochs 3 --batch_size 16",
-            "Training safety judge on prepared data"
+            cmd,
+            "Training safety judge on prepared data (optimized for 8K samples)"
         )
+        
+        if args.visualize_training:
+            print("\n📊 Training visualizations saved to: outputs/checkpoints/training_visualizations/")
+            print("   Open the HTML files to see how the model evolved during training!")
     
     # Step 3: Evaluation
     if not args.demo_only:
@@ -152,6 +173,21 @@ def main():
                 "Running CLI demo"
             )
     
+    # Step 6: Rainbow Adversarial Testing (Optional)
+    if not args.skip_rainbow and not args.demo_only and not args.eval_only:
+        print("\n🌈 Rainbow Adversarial Testing")
+        print("   This will:")
+        print("   - Generate adversarial prompts")
+        print("   - Test model robustness")
+        print("   - Create vulnerability report")
+        
+        run_command(
+            "python src/adversarial/rainbow_loop.py --iterations 100 --output_dir outputs/rainbow",
+            "Running Rainbow adversarial testing"
+        )
+        
+        print("\n📁 Rainbow results saved to: outputs/rainbow/")
+    
     # Summary
     total_time = time.time() - start_time
     print(f"\n{'='*60}")
@@ -159,16 +195,29 @@ def main():
     print(f"{'='*60}")
     
     print("\n📊 Key Outputs:")
-    print("   - Trained model: models/safety_judge/")
+    print("   - Trained model: outputs/checkpoints/best_model.pt")
     print("   - Evaluation results: outputs/evaluation/")
     print("   - MI visualizations: outputs/mi_visualizations/")
+    
+    if args.visualize_training:
+        print("   - Training MI evolution: outputs/checkpoints/training_visualizations/")
+    
+    if not args.skip_rainbow:
+        print("   - Rainbow adversarial results: outputs/rainbow/")
+    
     print("   - Demo available at: http://localhost:8501")
     
     print("\n🚀 Next Steps:")
     print("   1. Review evaluation metrics")
     print("   2. Explore MI visualizations")
-    print("   3. Test with your own prompts in the demo")
-    print("   4. When ready: add Rainbow adversarial with --enable-rainbow")
+    
+    if args.visualize_training:
+        print("   3. Check training evolution visualizations")
+    
+    print("   4. Test with your own prompts in the demo")
+    
+    if args.skip_rainbow:
+        print("   5. When ready: add Rainbow adversarial with --skip-rainbow removed")
 
 
 if __name__ == "__main__":

@@ -4,9 +4,9 @@ Training script for the Safety Judge
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
-from transformers import AutoTokenizer
-from transformers.optimization import get_linear_schedule_with_warmup
+from torch.utils.data import DataLoader
+from transformers import AutoTokenizer, get_linear_schedule_with_warmup, get_cosine_schedule_with_warmup
+from datasets import load_from_disk
 import numpy as np
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, roc_auc_score
 from tqdm import tqdm
@@ -73,25 +73,59 @@ class SafetyJudgeTrainer:
         self.use_amp = self.dtype == torch.float16 and torch.cuda.is_available()
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
         
-        # Only optimize the probe head parameters
+        # Initialize MI visualizer if requested
+        self.mi_visualizer = None
+        if config.get('visualize_during_training', False):
+            from src.mi_tools.visualization import SafetyJudgeMIVisualizer
+            self.mi_visualizer = SafetyJudgeMIVisualizer(model, tokenizer)
+            self.visualization_dir = Path(config['output_dir']) / 'training_visualizations'
+            self.visualization_dir.mkdir(parents=True, exist_ok=True)
+            print(f"📊 MI visualizations will be saved to {self.visualization_dir}")
+        
+        # Get trainable parameters - both probe head and unfrozen layers
+        trainable_params = []
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                trainable_params.append(param)
+                print(f"Training: {name}")
+        
+        print(f"\nTotal trainable parameters: {sum(p.numel() for p in trainable_params):,}")
+        
+        # Use different learning rates for different parts
+        optimizer_groups = [
+            # Probe head - higher learning rate
+            {
+                'params': self.model.probe_head.parameters(),
+                'lr': config['learning_rate']
+            },
+            # Unfrozen transformer layers - lower learning rate
+            {
+                'params': [p for n, p in self.model.base_model.named_parameters() if p.requires_grad],
+                'lr': config['learning_rate'] * 0.1  # 10x smaller for pretrained layers
+            }
+        ]
+        
         self.optimizer = torch.optim.AdamW(
-            self.model.probe_head.parameters(),
-            lr=config['learning_rate'],
-            weight_decay=config['weight_decay']
+            optimizer_groups,
+            weight_decay=config['weight_decay'],
+            betas=(0.9, 0.999),  # Standard AdamW betas
+            eps=1e-8
         )
         
-        # Loss function
-        self.criterion = nn.CrossEntropyLoss()
+        # Loss function with label smoothing for better generalization
+        self.criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
         
         # Setup data loaders
         self.train_loader = self._create_dataloader(self.train_dataset, shuffle=True)
         self.val_loader = self._create_dataloader(self.val_dataset, shuffle=False)
         
-        # Learning rate scheduler
+        # Cosine learning rate scheduler with warmup
         num_training_steps = len(self.train_loader) * config['num_epochs']
-        self.scheduler = get_linear_schedule_with_warmup(
+        num_warmup_steps = int(0.1 * num_training_steps)
+        
+        self.scheduler = get_cosine_schedule_with_warmup(
             self.optimizer,
-            num_warmup_steps=int(0.1 * num_training_steps),
+            num_warmup_steps=num_warmup_steps,
             num_training_steps=num_training_steps
         )
         
@@ -147,47 +181,62 @@ class SafetyJudgeTrainer:
         all_preds = []
         all_labels = []
         
-        # Print GPU memory usage at start of epoch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()  # Clear cache at start of epoch
-            print(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+        # Gradient accumulation for effective larger batch size
+        accumulation_steps = self.config.get('gradient_accumulation_steps', 2)
+        
+        # Mixed precision training for efficiency
+        scaler = torch.cuda.amp.GradScaler() if self.device.type == 'cuda' else None
         
         progress_bar = tqdm(self.train_loader, desc="Training")
         
         for batch_idx, batch in enumerate(progress_bar):
-            # Forward pass with automatic mixed precision
-            with torch.amp.autocast(device_type='cuda', enabled=self.use_amp):
-                outputs = self.model(batch['input_ids'], batch['attention_mask'])
-                logits = outputs['logits'] if isinstance(outputs, dict) else outputs
-                loss = self.criterion(logits, batch['labels'])
+            # Move to device
+            input_ids = batch['input_ids'].to(self.device)
+            attention_mask = batch['attention_mask'].to(self.device)
+            labels = batch['labels'].to(self.device)
             
-            # Backward pass with gradient scaling
-            self.optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(self.model.probe_head.parameters(), 1.0)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-            self.scheduler.step()
+            # Forward pass with mixed precision
+            if scaler is not None:
+                with torch.cuda.amp.autocast():
+                    outputs = self.model(input_ids, attention_mask)
+                    logits = outputs['logits'] if isinstance(outputs, dict) else outputs
+                    loss = self.criterion(logits, labels)
+            else:
+                outputs = self.model(input_ids, attention_mask)
+                logits = outputs['logits'] if isinstance(outputs, dict) else outputs
+                loss = self.criterion(logits, labels)
+            
+            # Scale loss for gradient accumulation
+            loss = loss / accumulation_steps
+            
+            # Backward pass
+            if scaler is not None:
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
+            
+            # Update weights every accumulation_steps
+            if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(self.train_loader):
+                if scaler is not None:
+                    scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    scaler.step(self.optimizer)
+                    scaler.update()
+                else:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    self.optimizer.step()
+                
+                self.scheduler.step()
+                self.optimizer.zero_grad()
             
             # Track metrics
-            total_loss += loss.item()
-            with torch.no_grad():
-                preds = torch.argmax(logits, dim=1)
-                all_preds.extend(preds.cpu().numpy())
-                all_labels.extend(batch['labels'].cpu().numpy())
+            total_loss += loss.item() * accumulation_steps
+            preds = torch.argmax(logits, dim=1)
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
             
-            # Update progress bar with GPU memory info
-            if torch.cuda.is_available():
-                mem_info = f"GPU mem: {torch.cuda.memory_allocated() / 1024**2:.0f}MB"
-                progress_bar.set_postfix({'loss': loss.item(), 'mem': mem_info})
-            else:
-                progress_bar.set_postfix({'loss': loss.item()})
-            
-            # Explicitly clear some memory every few batches
-            if batch_idx % 10 == 0:
-                del outputs, logits, loss
-                torch.cuda.empty_cache()
+            # Update progress bar
+            progress_bar.set_postfix({'loss': loss.item() * accumulation_steps})
         
         # Calculate metrics
         metrics = self._calculate_metrics(all_labels, all_preds)
@@ -275,6 +324,14 @@ class SafetyJudgeTrainer:
             val_metrics = self.validate()
             print(f"Val metrics: {val_metrics}")
             
+            # Create MI visualizations every N epochs or on first/last epoch
+            visualization_interval = self.config.get('visualization_interval', 3)
+            if (self.mi_visualizer and 
+                (epoch == 0 or 
+                 epoch == self.config['num_epochs'] - 1 or 
+                 (epoch + 1) % visualization_interval == 0)):
+                self.create_mi_visualizations(epoch + 1, val_metrics)
+            
             # Log to wandb
             if self.config.get('use_wandb', False):
                 wandb.log({
@@ -315,6 +372,10 @@ class SafetyJudgeTrainer:
         
         print("\nTraining completed!")
         print(f"Best validation metric: {best_val_metric:.4f}")
+        
+        if self.mi_visualizer:
+            print(f"\n📊 MI visualizations saved to: {self.visualization_dir}")
+            print("   View them by opening the HTML files in your browser")
     
     def save_checkpoint(self, path: Path, epoch: int, metrics: Dict):
         """Save model checkpoint"""
@@ -336,26 +397,126 @@ class SafetyJudgeTrainer:
         metrics_path = path.parent / f"{path.stem}_metrics.json"
         with open(metrics_path, 'w') as f:
             json.dump(metrics, f, indent=2)
+    
+    def create_mi_visualizations(self, epoch: int, val_metrics: Dict):
+        """Create MI visualizations for validation samples"""
+        if self.mi_visualizer is None:
+            return
+            
+        print(f"\n🔬 Creating MI visualizations for epoch {epoch}...")
+        
+        # Select a few diverse validation samples
+        safe_samples = [s for s in self.val_dataset if s['label'] == 1][:2]
+        unsafe_samples = [s for s in self.val_dataset if s['label'] == 0][:2]
+        samples = safe_samples + unsafe_samples
+        
+        # Create visualizations for each sample
+        for i, sample in enumerate(samples):
+            prompt = sample['prompt']
+            label = "safe" if sample['label'] == 1 else "unsafe"
+            
+            # Token attribution
+            token_fig, _ = self.mi_visualizer.create_token_attribution_heatmap(prompt, return_data=True)
+            token_path = self.visualization_dir / f"epoch_{epoch}_sample_{i}_{label}_tokens.html"
+            token_fig.write_html(str(token_path))
+            
+            # Layer activations
+            layer_fig = self.mi_visualizer.visualize_layer_activations(prompt)
+            layer_path = self.visualization_dir / f"epoch_{epoch}_sample_{i}_{label}_layers.html"
+            layer_fig.write_html(str(layer_path))
+        
+        # Compare safe vs unsafe circuits if we have both
+        if safe_samples and unsafe_samples:
+            circuit_fig, circuit_data = self.mi_visualizer.compare_safe_unsafe_circuits(
+                safe_samples[0]['prompt'], 
+                unsafe_samples[0]['prompt']
+            )
+            circuit_path = self.visualization_dir / f"epoch_{epoch}_circuit_comparison.html"
+            circuit_fig.write_html(str(circuit_path))
+            
+            # Log the critical divergence layer
+            print(f"   Critical divergence at layer {circuit_data['critical_layer']}")
+        
+        # Create summary visualization showing metrics evolution
+        self._create_metrics_summary(epoch, val_metrics)
+        
+        print(f"   ✅ Visualizations saved to {self.visualization_dir}")
+    
+    def _create_metrics_summary(self, epoch: int, val_metrics: Dict):
+        """Create a summary plot of training progress"""
+        import plotly.graph_objects as go
+        
+        # Track metrics history
+        if not hasattr(self, 'metrics_history'):
+            self.metrics_history = {'epochs': [], 'accuracy': [], 'f1': [], 'loss': []}
+        
+        self.metrics_history['epochs'].append(epoch)
+        self.metrics_history['accuracy'].append(val_metrics['accuracy'])
+        self.metrics_history['f1'].append(val_metrics['f1'])
+        self.metrics_history['loss'].append(val_metrics['loss'])
+        
+        # Create plot
+        fig = go.Figure()
+        
+        # Add traces
+        fig.add_trace(go.Scatter(
+            x=self.metrics_history['epochs'],
+            y=self.metrics_history['accuracy'],
+            mode='lines+markers',
+            name='Accuracy',
+            line=dict(color='blue')
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=self.metrics_history['epochs'],
+            y=self.metrics_history['f1'],
+            mode='lines+markers',
+            name='F1 Score',
+            line=dict(color='green')
+        ))
+        
+        # Add loss on secondary y-axis
+        fig.add_trace(go.Scatter(
+            x=self.metrics_history['epochs'],
+            y=self.metrics_history['loss'],
+            mode='lines+markers',
+            name='Loss',
+            line=dict(color='red'),
+            yaxis='y2'
+        ))
+        
+        # Update layout
+        fig.update_layout(
+            title='Training Progress',
+            xaxis_title='Epoch',
+            yaxis_title='Metric Value',
+            yaxis2=dict(
+                title='Loss',
+                overlaying='y',
+                side='right'
+            ),
+            height=400,
+            showlegend=True
+        )
+        
+        # Save
+        metrics_path = self.visualization_dir / 'training_progress.html'
+        fig.write_html(str(metrics_path))
 
 
 def main():
-    import os
-    from huggingface_hub import login
-    import dotenv
-    
-    dotenv.load_dotenv()
-    login(token=os.getenv("HF_TOKEN"))
-
-    parser = argparse.ArgumentParser(description='Train the Safety Judge model')
-    parser.add_argument('--data_dir', type=str, default='./data/prepared',
-                       help='Path to prepared dataset directory')
-    parser.add_argument('--base_model', type=str, default='meta-llama/Llama-3.1-8B-Instruct',
-                       help='Name of the pretrained model to use')
-    parser.add_argument('--output_dir', type=str, default='./models',
-                       help='Directory to save the trained model')
-    parser.add_argument('--batch_size', type=int, default=4,
+    parser = argparse.ArgumentParser(description="Train Safety Judge")
+    parser.add_argument('--data_dir', type=str, default='./data/prepared/safety_dataset',
+                       help='Path to prepared dataset')
+    parser.add_argument('--output_dir', type=str, default='./outputs/checkpoints',
+                       help='Output directory for checkpoints')
+    parser.add_argument('--batch_size', type=int, default=8,  # Reduced for Llama 3.1
                        help='Training batch size')
-    parser.add_argument('--num_epochs', type=int, default=3,
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=4,
+                       help='Gradient accumulation steps (effective batch = batch_size * this)')
+    parser.add_argument('--learning_rate', type=float, default=2e-4,  # Lower for stability
+                       help='Learning rate for probe head')
+    parser.add_argument('--num_epochs', type=int, default=15,  # More epochs for 8K samples
                        help='Number of training epochs')
     parser.add_argument('--learning_rate', type=float, default=2e-5,
                        help='Learning rate')
@@ -363,22 +524,64 @@ def main():
                        help='Weight decay')
     parser.add_argument('--max_length', type=int, default=256,
                        help='Maximum sequence length')
+    parser.add_argument('--freeze_layers', type=int, default=20,  # Unfreeze last 12 layers
+                       help='Number of layers to freeze in base model')
     parser.add_argument('--use_wandb', action='store_true',
-                       help='Whether to use Weights & Biases for logging')
-    parser.add_argument('--gradient_checkpointing', action='store_true', default=True,
-                       help='Enable gradient checkpointing to save memory')
+                       help='Use Weights & Biases for logging')
+    parser.add_argument('--pooling', type=str, default='mean', choices=['mean', 'max', 'cls'],
+                       help='Pooling strategy for hidden states')
+    parser.add_argument('--visualize_during_training', action='store_true',
+                       help='Create MI visualizations during training')
+    parser.add_argument('--visualization_interval', type=int, default=3,
+                       help='Create visualizations every N epochs')
     
     args = parser.parse_args()
     
-    # Load the data
-    train_data = load_json_data(Path(args.data_dir) / 'train.json')
-    val_data = load_json_data(Path(args.data_dir) / 'val.json')
-    test_data = load_json_data(Path(args.data_dir) / 'test.json')
+    # Training configuration
+    config = {
+        'batch_size': args.batch_size,
+        'gradient_accumulation_steps': args.gradient_accumulation_steps,
+        'learning_rate': args.learning_rate,
+        'num_epochs': args.num_epochs,
+        'max_length': args.max_length,
+        'weight_decay': 0.1,  # Higher weight decay for regularization
+        'patience': 5,  # More patience for convergence
+        'output_dir': args.output_dir,
+        'use_wandb': args.use_wandb,
+        'visualize_during_training': args.visualize_during_training,
+        'visualization_interval': args.visualization_interval
+    }
     
-    # Initialize model and tokenizer
-    config = SafetyJudgeConfig(
-        base_model=args.base_model,
-        max_length=args.max_length
+    print(f"Effective batch size: {args.batch_size * args.gradient_accumulation_steps}")
+    
+    # Load dataset - use JSON files directly
+    import json
+    from torch.utils.data import Dataset
+    
+    class SafetyDataset(Dataset):
+        def __init__(self, file_path):
+            with open(file_path, 'r') as f:
+                self.data = json.load(f)
+        
+        def __len__(self):
+            return len(self.data)
+        
+        def __getitem__(self, idx):
+            return self.data[idx]
+    
+    print(f"Loading dataset from {args.data_dir}")
+    train_dataset = SafetyDataset('./data/prepared/train.json')
+    val_dataset = SafetyDataset('./data/prepared/val.json')
+    
+    print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
+    
+    # Initialize model
+    model_config = SafetyJudgeConfig(
+        freeze_layers=args.freeze_layers,
+        max_length=args.max_length,
+        use_pooler=args.pooling,
+        probe_hidden_size=128,  # Smaller for 8K dataset
+        dropout_rate=0.2  # Higher dropout
     )
     model = SafetyJudge(config)
     tokenizer = AutoTokenizer.from_pretrained(args.base_model)
@@ -415,8 +618,8 @@ def main():
     trainer = SafetyJudgeTrainer(
         model=model,
         tokenizer=tokenizer,
-        train_data=train_data,
-        val_data=val_data,
+        train_dataset=train_dataset,
+        val_dataset=val_dataset,
         config=trainer_config
     )
     

@@ -15,14 +15,13 @@ from dataclasses import dataclass
 class SafetyJudgeConfig:
     """Configuration for the Safety Judge model"""
     base_model: str = "meta-llama/Llama-3.1-8B"
-    freeze_layers: int = 24  # Freeze first 24 layers (out of 32)
-    probe_hidden_size: int = 256
+    freeze_layers: int = 20  # Reduced from 24 - unfreeze last 12 layers for more capacity
+    probe_hidden_size: int = 128  # Reduced from 256 to prevent overfitting
     num_classes: int = 2  # Safe vs Unsafe
-    dropout_rate: float = 0.1
+    dropout_rate: float = 0.2  # Increased from 0.1 for better regularization
     max_length: int = 512
-    use_lora: bool = True
-    lora_rank: int = 8
-    lora_alpha: int = 16
+    use_pooler: str = "mean"  # "mean", "max", or "cls" pooling
+    use_layer_norm: bool = True  # Add layer norm for stability
 
 
 class SafetyProbeHead(nn.Module):
@@ -32,37 +31,40 @@ class SafetyProbeHead(nn.Module):
         super().__init__()
         self.config = config
         
-        # Two-layer MLP with dropout
-        self.probe = nn.Sequential(
-            nn.Linear(input_dim, config.probe_hidden_size),
-            nn.ReLU(),
-            nn.Dropout(config.dropout_rate),
-            nn.Linear(config.probe_hidden_size, config.probe_hidden_size // 2),
-            nn.ReLU(),
-            nn.Dropout(config.dropout_rate),
-            nn.Linear(config.probe_hidden_size // 2, config.num_classes)
-        )
+        # Simpler 2-layer MLP for 8K samples
+        layers = []
         
-        # Initialize weights
+        # Optional layer norm for stability
+        if config.use_layer_norm:
+            layers.append(nn.LayerNorm(input_dim))
+        
+        # First layer
+        layers.extend([
+            nn.Linear(input_dim, config.probe_hidden_size),
+            nn.GELU(),  # GELU often works better than ReLU
+            nn.Dropout(config.dropout_rate),
+        ])
+        
+        # Output layer
+        layers.append(nn.Linear(config.probe_hidden_size, config.num_classes))
+        
+        self.probe = nn.Sequential(*layers)
+        
+        # Initialize weights with careful scaling
         self._init_weights()
     
     def _init_weights(self):
-        """Initialize probe weights with small values"""
+        """Initialize probe weights with small values for stable training"""
         for module in self.probe.modules():
             if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight, gain=0.1)
+                # Smaller initialization for stability with limited data
+                nn.init.normal_(module.weight, mean=0.0, std=0.02)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
     
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """Forward pass through probe head"""
-        # Pool hidden states (use CLS token or mean pooling)
-        if hidden_states.ndim == 3:  # [batch, seq_len, hidden]
-            pooled = hidden_states[:, 0, :]  # Use first token (CLS-like)
-        else:
-            pooled = hidden_states
-        
-        return self.probe(pooled)
+        return self.probe(hidden_states)
 
 
 class SafetyJudge(nn.Module):
@@ -157,15 +159,42 @@ class SafetyJudge(nn.Module):
             output_hidden_states=True
         )
         
-        # Extract hidden states from the last unfrozen layer
-        hidden_states = outputs.hidden_states[self.config.freeze_layers]
+        # Get hidden states from multiple layers for better representation
+        # Use last 3 unfrozen layers and combine them
+        layer_outputs = []
+        for i in range(self.config.freeze_layers, min(self.config.freeze_layers + 3, len(outputs.hidden_states) - 1)):
+            layer_outputs.append(outputs.hidden_states[i])
+        
+        # Combine layers (weighted average)
+        if len(layer_outputs) > 1:
+            hidden_states = torch.stack(layer_outputs).mean(dim=0)
+        else:
+            hidden_states = outputs.hidden_states[self.config.freeze_layers]
+        
+        # Apply pooling strategy
+        if self.config.use_pooler == "mean":
+            # Mean pooling with attention mask
+            if attention_mask is not None:
+                mask_expanded = attention_mask.unsqueeze(-1).expand(hidden_states.size()).float()
+                sum_hidden = torch.sum(hidden_states * mask_expanded, dim=1)
+                sum_mask = torch.clamp(mask_expanded.sum(dim=1), min=1e-9)
+                pooled = sum_hidden / sum_mask
+            else:
+                pooled = hidden_states.mean(dim=1)
+        elif self.config.use_pooler == "max":
+            # Max pooling
+            pooled = hidden_states.max(dim=1)[0]
+        else:  # "cls"
+            # Use first token
+            pooled = hidden_states[:, 0, :]
         
         # Pass through probe head
-        logits = self.probe_head(hidden_states)
+        logits = self.probe_head(pooled)
         
         if return_dict:
             return {
                 'logits': logits,
+                'pooled': pooled,
                 'hidden_states': outputs.hidden_states,
                 'attentions': outputs.attentions,
                 'activations': self.activation_cache.copy()

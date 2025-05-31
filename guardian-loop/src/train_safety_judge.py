@@ -76,8 +76,16 @@ class SafetyJudgeTrainer:
         print(f"Model dtype: {self.dtype}")
         
         # Setup mixed precision training
-        self.use_amp = self.dtype == torch.float16 and torch.cuda.is_available()
+        # Only use AMP if model is in float32 - if already float16, no need for AMP
+        self.use_amp = self.dtype == torch.float32 and torch.cuda.is_available()
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
+        
+        if self.dtype == torch.float16:
+            print("Model is already in float16 - disabling AMP to avoid gradient scaling issues")
+        elif self.use_amp:
+            print("Using automatic mixed precision training")
+        else:
+            print("Using standard float32 training")
         
         # Initialize MI visualizer if requested
         self.mi_visualizer = None
@@ -202,14 +210,24 @@ class SafetyJudgeTrainer:
                 loss = loss / accumulation_steps
             
             # Backward pass with gradient scaling
-            self.scaler.scale(loss).backward()
+            if self.use_amp:
+                self.scaler.scale(loss).backward()
+            else:
+                loss.backward()
             
             # Update weights every accumulation_steps or at the end
             if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(self.train_loader):
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(self.model.probe_head.parameters(), 1.0)
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
+                if self.use_amp:
+                    # Use gradient scaling for mixed precision
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.probe_head.parameters(), 1.0)
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    # Standard gradient update for float16 models
+                    torch.nn.utils.clip_grad_norm_(self.model.probe_head.parameters(), 1.0)
+                    self.optimizer.step()
+                
                 self.scheduler.step()
                 self.optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
             

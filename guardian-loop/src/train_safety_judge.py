@@ -63,7 +63,15 @@ class SafetyJudgeTrainer:
         print(f"Using device: {self.device}")
         if torch.cuda.is_available():
             print(f"GPU: {torch.cuda.get_device_name()}")
+        
+        # Move model to device and get its dtype
         self.model.to(self.device)
+        self.dtype = next(self.model.parameters()).dtype
+        print(f"Model dtype: {self.dtype}")
+        
+        # Setup mixed precision training
+        self.use_amp = self.dtype == torch.float16 and torch.cuda.is_available()
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
         
         # Only optimize the probe head parameters
         self.optimizer = torch.optim.AdamW(
@@ -99,7 +107,7 @@ class SafetyJudgeTrainer:
         """Create a DataLoader for the dataset"""
         def collate_fn(batch):
             prompts = [item['prompt'] for item in batch]
-            labels = torch.tensor([item['label'] for item in batch], device=self.device)
+            labels = torch.tensor([item['label'] for item in batch], device=self.device, dtype=torch.long)
             
             # Tokenize prompts using encode_plus instead of direct call
             encoded = self.tokenizer.batch_encode_plus(
@@ -110,8 +118,13 @@ class SafetyJudgeTrainer:
                 return_tensors='pt'
             )
             
-            # Move encoded tensors to GPU
-            encoded = {k: v.to(self.device) for k, v in encoded.items()}
+            # Move tensors to GPU with correct dtypes:
+            # - input_ids: long (for embedding lookup)
+            # - attention_mask: bool
+            encoded = {
+                'input_ids': encoded['input_ids'].to(device=self.device, dtype=torch.long),
+                'attention_mask': encoded['attention_mask'].to(device=self.device, dtype=torch.bool),
+            }
             
             return {
                 'input_ids': encoded['input_ids'],
@@ -141,27 +154,27 @@ class SafetyJudgeTrainer:
         progress_bar = tqdm(self.train_loader, desc="Training")
         
         for batch in progress_bar:
-            # No need to move to device since it's already done in collate_fn
+            # Forward pass with automatic mixed precision
+            with torch.amp.autocast(device_type='cuda', enabled=self.use_amp):
+                outputs = self.model(batch['input_ids'], batch['attention_mask'])
+                logits = outputs['logits'] if isinstance(outputs, dict) else outputs
+                loss = self.criterion(logits, batch['labels'])
             
-            # Forward pass
-            outputs = self.model(batch['input_ids'], batch['attention_mask'])
-            logits = outputs['logits'] if isinstance(outputs, dict) else outputs
-            
-            # Calculate loss
-            loss = self.criterion(logits, batch['labels'])
-            
-            # Backward pass
+            # Backward pass with gradient scaling
             self.optimizer.zero_grad()
-            loss.backward()
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(self.model.probe_head.parameters(), 1.0)
-            self.optimizer.step()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
             self.scheduler.step()
             
             # Track metrics
             total_loss += loss.item()
-            preds = torch.argmax(logits, dim=1)
-            all_preds.extend(preds.cpu().numpy())
-            all_labels.extend(batch['labels'].cpu().numpy())
+            with torch.no_grad():
+                preds = torch.argmax(logits, dim=1)
+                all_preds.extend(preds.cpu().numpy())
+                all_labels.extend(batch['labels'].cpu().numpy())
             
             # Update progress bar with GPU memory info
             if torch.cuda.is_available():

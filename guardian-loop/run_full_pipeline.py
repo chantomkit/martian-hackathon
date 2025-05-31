@@ -76,13 +76,13 @@ def main():
             "Preparing datasets with safe mutations"
         )
         print("\n📊 Dataset Statistics:")
-        print("   - WildGuard: 5,000 samples")
-        print("   - BeaverTails: 5,000 samples")
-        print("   - ToxicChat: 3,000 samples")
-        print("   - WildChat toxic: 3,000 samples")
-        print("   - Anthropic red team: 2,000 samples")
+        print("   - WildGuard: 1,000 samples")
+        print("   - BeaverTails: 1,000 samples")
+        print("   - ToxicChat: 1,000 samples")
+        print("   - WildChat toxic: 1,000 samples")
+        print("   - Anthropic red team: 1,000 samples")
         print("   - Plus GPT-4o mutations of unsafe prompts")
-        print("   - Expected total: ~27K balanced samples")
+        print("   - Expected total: ~10K balanced samples")
     
     # Step 2: Training
     if not args.skip_training and not args.demo_only and not args.eval_only:

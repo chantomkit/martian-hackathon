@@ -11,6 +11,7 @@ from typing import List, Dict, Tuple, Optional
 from datasets import load_dataset, concatenate_datasets
 from tqdm import tqdm
 import numpy as np
+import random
 from collections import defaultdict
 import logging
 
@@ -290,17 +291,21 @@ class SafetyDatasetPreparer:
         
         # Initialize Martian client
         try:
-            from martian import Client
-            import os
-            from dotenv import load_dotenv
-            load_dotenv()
+            from martian_apart_hack_sdk import utils, martian_client
             
-            api_key = os.getenv('MARTIAN_API_KEY')
-            if not api_key:
-                logger.warning("No Martian API key found, using template-based mutations as fallback")
-                return self._template_based_mutations(unsafe_prompts, num_mutations)
-                
-            client = Client(api_key=api_key)
+            # Load config and create client
+            config = utils.load_config()
+            client = martian_client.MartianClient(
+                api_url=config.api_url,
+                api_key=config.api_key,
+            )
+            
+            # Create OpenAI client with Martian gateway
+            import openai
+            openai_client = openai.OpenAI(
+                api_key=config.api_key,
+                base_url=config.api_url + "/openai/v2"
+            )
             
         except ImportError:
             logger.warning("Martian client not installed, using template-based mutations")
@@ -369,42 +374,42 @@ If you cannot create a genuinely safe version that meets all these criteria, res
                     user_prompt = f"Convert this unsafe prompt into a safe, educational variation:\n\nUnsafe prompt: \"{unsafe_prompt}\"\n\nSafe variation:"
                     
                     # Call GPT-4o via Martian
-                    response = client.generate(
+                    response = openai_client.chat.completions.create(
                         model="gpt-4o",
                         messages=[
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_prompt}
                         ],
                         max_tokens=150,
-                        temperature=0.7,
-                        n=num_mutations  # Generate multiple variations
+                        temperature=0.7
                     )
                     
                     # Extract mutations from response
-                    if hasattr(response, 'choices'):
+                    if response.choices:
                         for choice in response.choices:
-                            safe_prompt = choice.message.content.strip()
-                            
-                            # Skip if model indicates it cannot create safe version
-                            if "SKIP" in safe_prompt:
-                                continue
+                            if choice.message and choice.message.content:
+                                safe_prompt = choice.message.content.strip()
                                 
-                            # Clean up the response
-                            safe_prompt = safe_prompt.replace('"', '').strip()
-                            
-                            if safe_prompt and len(safe_prompt) > 10:
-                                mutations.append({
-                                    'prompt': safe_prompt,
-                                    'label': 1,  # Safe
-                                    'source': 'gpt4o_mutation',
-                                    'original_unsafe': unsafe_prompt
-                                })
+                                # Skip if model indicates it cannot create safe version
+                                if "SKIP" in safe_prompt:
+                                    continue
                                 
-                                # Print first few mutation examples
-                                if len(mutations) <= 5:
-                                    print(f"\n🔄 Mutation example:")
-                                    print(f"   ❌ Unsafe: {unsafe_prompt}")
-                                    print(f"   ✅ Safe:   {safe_prompt}")
+                                # Clean up the response
+                                safe_prompt = safe_prompt.replace('"', '').strip()
+                                
+                                if safe_prompt and len(safe_prompt) > 10:
+                                    mutations.append({
+                                        'prompt': safe_prompt,
+                                        'label': 1,  # Safe
+                                        'source': 'gpt4o_mutation',
+                                        'original_unsafe': unsafe_prompt
+                                    })
+                                    
+                                    # Print first few mutation examples
+                                    if len(mutations) <= 5:
+                                        print(f"\n🔄 Mutation example:")
+                                        print(f"   ❌ Unsafe: {unsafe_prompt}")
+                                        print(f"   ✅ Safe:   {safe_prompt}")
                     
                 except Exception as e:
                     logger.warning(f"Error mutating prompt via GPT-4o: {e}")
@@ -469,19 +474,19 @@ If you cannot create a genuinely safe version that meets all these criteria, res
                 if len(safe_samples) * 2 < target_safe:
                     # Undersample unsafe instead
                     target_unsafe = int(len(safe_samples) * (1 - target_ratio) / target_ratio)
-                    unsafe_samples = np.random.choice(unsafe_samples, size=target_unsafe, replace=False).tolist()
+                    unsafe_samples = random.sample(unsafe_samples, target_unsafe)
                 else:
                     # Oversample safe
                     additional_safe = target_safe - len(safe_samples)
-                    safe_samples += np.random.choice(safe_samples, size=additional_safe, replace=True).tolist()
+                    safe_samples.extend(random.choices(safe_samples, k=additional_safe))
         else:
             # Need more unsafe samples (less common)
             target_unsafe = int(len(safe_samples) * (1 - target_ratio) / target_ratio)
             if target_unsafe < len(unsafe_samples):
-                unsafe_samples = np.random.choice(unsafe_samples, size=target_unsafe, replace=False).tolist()
+                unsafe_samples = random.sample(unsafe_samples, target_unsafe)
                 
         balanced = safe_samples + unsafe_samples
-        np.random.shuffle(balanced)
+        random.shuffle(balanced)
         
         final_safe = sum(1 for s in balanced if s['label'] == 1)
         logger.info(f"Balanced distribution - Safe: {final_safe}, Unsafe: {len(balanced) - final_safe}")
@@ -577,8 +582,8 @@ If you cannot create a genuinely safe version that meets all these criteria, res
         
         # Show some examples from balanced dataset
         print("\n📝 Sample Examples from Balanced Dataset:")
-        np.random.seed(42)  # For consistent examples
-        example_indices = np.random.choice(len(balanced_samples), min(6, len(balanced_samples)), replace=False)
+        random.seed(42)  # For consistent examples
+        example_indices = random.sample(range(len(balanced_samples)), min(6, len(balanced_samples)))
         
         for i, idx in enumerate(example_indices):
             sample = balanced_samples[idx]
@@ -588,7 +593,7 @@ If you cannot create a genuinely safe version that meets all these criteria, res
             print(f"   {sample['prompt'][:120]}...")
         
         # Shuffle before splitting
-        np.random.shuffle(balanced_samples)
+        random.shuffle(balanced_samples)
         
         # Create splits
         n_samples = len(balanced_samples)

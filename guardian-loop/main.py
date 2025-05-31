@@ -46,8 +46,10 @@ def prepare_data():
     preparer = SafetyDatasetPreparer()
     dataset = preparer.prepare_dataset(
         output_dir="./data/prepared",
-        test_split=0.2,
-        val_split=0.1
+        total_dataset_size=10000,  # Total samples
+        train_split=0.8,  # 80% train (8000), 10% val (1000), 10% test (1000)
+        balance_ratio=0.5,  # 50/50 safe/unsafe
+        use_mutations=False  # Disabled for now
     )
     
     print("✅ Dataset preparation complete")
@@ -65,15 +67,17 @@ def train_judge(use_existing=False):
     
     print("\n🧠 Training safety judge...")
     
-    # Prepare training arguments
+    # Prepare training arguments - OPTIMIZED FOR 8K DATASET
     train_args = [
         '--data_dir', './data/prepared/safety_dataset',
         '--output_dir', './outputs/checkpoints',
         '--batch_size', '8',  # Reduced for Llama 3.1
-        '--learning_rate', '5e-4',
-        '--num_epochs', '5',  # Reduced for hackathon
+        '--gradient_accumulation_steps', '4',  # Effective batch = 32
+        '--learning_rate', '2e-4',  # Optimized for stability
+        '--num_epochs', '15',  # More epochs for 8K samples
         '--max_length', '512',
-        '--freeze_layers', '24',
+        '--freeze_layers', '20',  # Unfreeze last 12 layers
+        '--pooling', 'mean',  # Better pooling strategy
     ]
     
     # Save original argv and replace

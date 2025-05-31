@@ -44,11 +44,13 @@ We build **two complementary 20M-parameter judges** that work together to pre-fi
 
 | Step | Detail |
 |------|--------|
-| Fitness | Use the target judge's logit (Safety or Feasibility). |
-| Archive grid | Cells keyed by *(prompt length, semantic novelty)*. |
-| Mutations | Synonym swap, instruction rewrite, role-play wrapper, ± α·latent vector. |
-| Selection | Keep mutants that flip the judge and are novel for their grid cell. |
-| Replay | Store mutants; label once with base LLM/Martian API for ground truth. |
+| **Archive Dimensions** | **Safety**: (Risk Category × Evasion Technique); **Feasibility**: (Question Type × Complexity Level) |
+| **Fitness** | Preference-based comparison of judge-fooling effectiveness (not raw logits) |
+| **Descriptor Sampling** | Biased toward low-fitness cells using temperature τ=0.1 |
+| **Mutations** | K sequential mutations (one per dimension) with category-specific prompts |
+| **Similarity Filter** | BLEU score < 0.6 between parent and child |
+| **Selection** | Pairwise comparison: keep prompt that better fools the judge |
+| **Replay** | Store in archive; label with Martian API for ground truth |
 
 ### 3.3 Self-Patching Loop  
 

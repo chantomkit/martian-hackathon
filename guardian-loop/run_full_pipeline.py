@@ -10,6 +10,8 @@ import subprocess
 import time
 from pathlib import Path
 import argparse
+from dotenv import load_dotenv
+from huggingface_hub import login
 
 
 def run_command(cmd, description):
@@ -33,6 +35,17 @@ def run_command(cmd, description):
 
 
 def main():
+    # Load environment variables and login to HF
+    load_dotenv()
+    if 'HF_TOKEN' not in os.environ:
+        print("⚠️  Error: HF_TOKEN not found in .env file")
+        print("Please add your HuggingFace token to .env file:")
+        print("HF_TOKEN=your_token_here")
+        sys.exit(1)
+    
+    login(token=os.getenv('HF_TOKEN'))
+    print("✅ Successfully logged in to HuggingFace")
+
     parser = argparse.ArgumentParser(description='Run Guardian-Loop pipeline')
     parser.add_argument('--skip-data-prep', action='store_true', 
                        help='Skip data preparation if already done')
@@ -86,14 +99,14 @@ def main():
             "python guardian-loop/src/data/prepare_safety_data.py",
             "Preparing datasets with safe mutations"
         )
-        print("\n📊 Dataset Statistics:")
-        print("   - WildGuard: 1,000 samples")
-        print("   - BeaverTails: 1,000 samples")
-        print("   - ToxicChat: 1,000 samples")
-        print("   - WildChat toxic: 1,000 samples")
-        print("   - Anthropic red team: 1,000 samples")
-        print("   - Plus GPT-4o mutations of unsafe prompts")
-        print("   - Expected total: ~10K balanced samples")
+        # print("\n📊 Dataset Statistics:")
+        # print("   - WildGuard: 1,000 samples")
+        # print("   - BeaverTails: 1,000 samples")
+        # print("   - ToxicChat: 1,000 samples")
+        # print("   - WildChat toxic: 1,000 samples")
+        # print("   - Anthropic red team: 1,000 samples")
+        # print("   - Plus GPT-4o mutations of unsafe prompts")
+        # print("   - Expected total: ~10K balanced samples")
     
     # Step 2: Training
     if not args.skip_training and not args.demo_only and not args.eval_only:

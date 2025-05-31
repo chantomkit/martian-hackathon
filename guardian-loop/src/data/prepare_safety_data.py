@@ -14,6 +14,8 @@ import numpy as np
 import random
 from collections import defaultdict
 import logging
+from huggingface_hub import login
+import dotenv
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -30,9 +32,11 @@ class SafetyDatasetPreparer:
         logger.info("Loading WildGuard dataset...")
         try:
             # WildGuard requires HuggingFace login
-            from huggingface_hub import login
-            import os
-            hf_token = os.getenv('HF_TOKEN')
+            
+            # Load config once at the start
+            config = dotenv.dotenv_values()
+            hf_token = config.get('HF_TOKEN')
+            
             if hf_token:
                 login(token=hf_token)
                 logger.info("Logged in to HuggingFace")
@@ -40,12 +44,12 @@ class SafetyDatasetPreparer:
                 logger.warning("WildGuard requires HuggingFace login. Skipping...")
                 logger.info("To use WildGuard:")
                 logger.info("1. Get a token from https://huggingface.co/settings/tokens")
-                logger.info("2. Run: export HF_TOKEN='your-token-here'")
+                logger.info("2. Add HF_TOKEN to your .env file")
                 logger.info("3. Or run: huggingface-cli login")
                 return []
                 
             # WildGuard has both prompts and responses with safety labels
-            dataset = load_dataset("allenai/wildguard", "wildguardmix", split="train")
+            dataset = load_dataset("allenai/WildChat-1M", split="train")
             
             samples = []
             safe_count = 0
@@ -180,12 +184,9 @@ class SafetyDatasetPreparer:
     
     def load_wildchat_toxic(self, max_samples: int = 20000) -> List[Dict]:
         """Load toxic subset of WildChat - 150K+ real harmful conversations"""
-        logger.info("Skipping WildChat - dataset too large (14 x 200MB+ files)")
-        logger.info("Using other datasets for efficiency")
-        return []
-        
-        # Original implementation commented out to avoid large downloads
-        """
+        # logger.info("Skipping WildChat - dataset too large (14 x 200MB+ files)")
+        # logger.info("Using other datasets for efficiency")
+        # return []
         logger.info("Loading WildChat toxic subset...")
         try:
             # WildChat-1M has real conversations with toxicity annotations
@@ -219,7 +220,6 @@ class SafetyDatasetPreparer:
         except Exception as e:
             logger.warning(f"Could not load WildChat: {e}")
             return []
-        """
     
     def load_anthropic_red_team(self, max_samples: int = 10000) -> List[Dict]:
         """Load Anthropic's red team attempts dataset"""

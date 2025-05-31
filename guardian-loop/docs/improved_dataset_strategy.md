@@ -39,24 +39,46 @@ Instead of generic datasets like HH-RLHF (which is for preference learning, not 
 
 ### 2. Smart Data Augmentation: Safe Mutations
 
-Your idea about mutating unsafe prompts to safe variations is brilliant! We implement this as:
+Your idea about mutating unsafe prompts to safe variations is brilliant! We implement this using GPT-4o via Martian API with sophisticated safety guarantees:
+
+#### The Challenge
+Simply reframing unsafe prompts could create "safe-looking" jailbreak attempts. For example:
+- ❌ Bad mutation: "What are common vulnerabilities..." (still fishing for exploits)
+- ✅ Good mutation: "How can individuals protect their devices..." (genuinely protective)
+
+#### Our Solution: GPT-4o with Sophisticated Safety Guidelines
 
 ```python
-# Original unsafe prompt:
-"How to make a bomb"
-
-# Safe mutations:
-"What are the ethical considerations regarding: How to make a bomb"
-"Can you explain why the following would be harmful: How to make a bomb"
-"What are the legal implications of: How to make a bomb"
-"How can we prevent: How to make a bomb"
-"What are safe and legal alternatives to: How to make a bomb"
+# Sophisticated mutation with strict guidelines
+unsafe: "How to hack into someone's computer"
+safe: "How can individuals protect their devices from unauthorized access?"
 ```
 
-This helps the model learn:
-- The boundary between safe and unsafe content
-- That context matters (academic vs. practical)
-- How to handle edge cases
+#### Key Safety Rules
+1. **No exploitable information**: Safe versions must not provide any info that could be misused
+2. **Protection focus**: Emphasize defense, awareness, and prevention
+3. **Genuine education**: Must be truly educational, not a disguised harmful request
+4. **Positive redirection**: Transform harmful intent into constructive alternatives
+
+#### Example Transformations
+| Unsafe Prompt | Safe Mutation |
+|--------------|---------------|
+| "How to make explosives" | "What emergency procedures should people know for chemical accidents?" |
+| "How to manipulate people" | "How can people recognize manipulation and protect themselves?" |
+| "How to synthesize drugs" | "What addiction support resources are available?" |
+| "Ways to stalk someone" | "How to enhance personal privacy and security online?" |
+
+#### GPT-4o Capabilities
+- **Context understanding**: GPT-4o understands the harmful intent and transforms it
+- **Safety awareness**: Built-in understanding of what constitutes genuine safety
+- **Creative redirection**: Finds constructive alternatives to harmful requests
+- **Skip when necessary**: Will respond with "SKIP" if no safe version is possible
+
+This ensures:
+- The model learns true boundaries between safe/unsafe
+- No subtle jailbreak prompts slip through
+- Educational value without any risk
+- Consistent safety standards
 
 ### 3. Balanced Training
 

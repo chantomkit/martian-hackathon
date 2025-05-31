@@ -15,13 +15,13 @@ python run_full_pipeline.py
 ```
 
 This will:
-1. Prepare datasets (~18K samples → ~27K with mutations)
+1. Prepare datasets (~5K samples → ~10K with mutations)
 2. Train the safety judge (3 epochs)
 3. Evaluate performance
 4. Generate MI visualizations
 5. Launch interactive demo
 
-**Estimated time**: 30-45 minutes with GPU, 2-3 hours with CPU
+**Estimated time**: 15-20 minutes with GPU, 1-1.5 hours with CPU
 
 ### Option 2: Run Steps Individually
 
@@ -59,16 +59,27 @@ python run_full_pipeline.py --eval-only
 
 ## 📊 Dataset Details
 
-**Total samples**: ~27,000 (balanced 50/50 safe/unsafe)
+**Total samples**: ~5,000-8,000 (balanced towards safe/unsafe)
 
-| Dataset | Samples | Description |
-|---------|---------|-------------|
-| WildGuard | 5,000 | State-of-the-art safety dataset |
-| BeaverTails | 5,000 | 14 harm categories |
-| ToxicChat | 3,000 | Real toxic conversations |
-| WildChat | 3,000 | Toxic ChatGPT interactions |
-| Anthropic | 2,000 | Professional red team |
-| GPT-4o Mutations | ~9,000 | Safe versions of unsafe prompts |
+| Dataset | Samples | Description | Notes |
+|---------|---------|-------------|-------|
+| WildGuard | 1,000 | State-of-the-art safety dataset | Requires HF login* |
+| BeaverTails | 2,000-3,000 | 14 harm categories | Works out of box |
+| ToxicChat | 2,000-3,000 | Real toxic conversations | Works out of box |
+| ~~WildChat~~ | ~~1,000~~ | ~~Toxic ChatGPT interactions~~ | Skipped (too large) |
+| Anthropic HH | 2,000 | Human preference data | Works out of box |
+| Mutations | ~100-2,500 | Safe versions of unsafe prompts | Depends on API |
+
+*To use WildGuard dataset:
+```bash
+# Option 1: Set environment variable
+export HF_TOKEN='your-huggingface-token'
+
+# Option 2: Use HF CLI
+huggingface-cli login
+
+# Get token from: https://huggingface.co/settings/tokens
+```
 
 ## 🔬 What Gets Evaluated
 
@@ -118,7 +129,7 @@ With the optimized dataset:
 - **Accuracy**: 85-90%
 - **AUC**: 0.91-0.93
 - **False Positive Rate**: <10%
-- **Training time**: ~30 min (GPU)
+- **Training time**: ~15 min (GPU)
 - **Inference latency**: <10ms
 
 ## 🛠️ Troubleshooting

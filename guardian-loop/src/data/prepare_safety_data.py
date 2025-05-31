@@ -28,6 +28,21 @@ class SafetyDatasetPreparer:
         """Load WildGuard dataset - state-of-the-art safety dataset with 92K examples"""
         logger.info("Loading WildGuard dataset...")
         try:
+            # WildGuard requires HuggingFace login
+            from huggingface_hub import login
+            import os
+            hf_token = os.getenv('HF_TOKEN')
+            if hf_token:
+                login(token=hf_token)
+                logger.info("Logged in to HuggingFace")
+            else:
+                logger.warning("WildGuard requires HuggingFace login. Skipping...")
+                logger.info("To use WildGuard:")
+                logger.info("1. Get a token from https://huggingface.co/settings/tokens")
+                logger.info("2. Run: export HF_TOKEN='your-token-here'")
+                logger.info("3. Or run: huggingface-cli login")
+                return []
+                
             # WildGuard has both prompts and responses with safety labels
             dataset = load_dataset("allenai/wildguard", "wildguardmix", split="train")
             
@@ -81,9 +96,13 @@ class SafetyDatasetPreparer:
         """Load BeaverTails - 330K+ QA pairs with 14 harm categories"""
         logger.info("Loading BeaverTails dataset...")
         try:
-            dataset = load_dataset("PKU-Alignment/BeaverTails", split="train")
+            # Use the correct split name
+            dataset = load_dataset("PKU-Alignment/BeaverTails", split="30k_train")
             
             samples = []
+            safe_count = 0
+            unsafe_count = 0
+            
             for i, item in enumerate(tqdm(dataset, desc="Processing BeaverTails")):
                 if i >= max_samples:
                     break
@@ -98,8 +117,18 @@ class SafetyDatasetPreparer:
                     'source': 'beavertails',
                     'categories': item.get('category', [])
                 })
+                
+                # Print examples
+                if is_safe and safe_count <= 3:
+                    logger.info(f"   [SAFE] BeaverTails example: {prompt[:80]}...")
+                    safe_count += 1
+                elif not is_safe and unsafe_count <= 3:
+                    logger.info(f"   [UNSAFE] BeaverTails example: {prompt[:80]}...")
+                    unsafe_count += 1
                     
-            logger.info(f"Loaded {len(samples)} samples from BeaverTails")
+            final_safe = sum(1 for s in samples if s['label'] == 1)
+            final_unsafe = len(samples) - final_safe
+            logger.info(f"Loaded {len(samples)} samples from BeaverTails (Safe: {final_safe}, Unsafe: {final_unsafe})")
             return samples
             
         except Exception as e:
@@ -150,6 +179,12 @@ class SafetyDatasetPreparer:
     
     def load_wildchat_toxic(self, max_samples: int = 20000) -> List[Dict]:
         """Load toxic subset of WildChat - 150K+ real harmful conversations"""
+        logger.info("Skipping WildChat - dataset too large (14 x 200MB+ files)")
+        logger.info("Using other datasets for efficiency")
+        return []
+        
+        # Original implementation commented out to avoid large downloads
+        """
         logger.info("Loading WildChat toxic subset...")
         try:
             # WildChat-1M has real conversations with toxicity annotations
@@ -183,34 +218,65 @@ class SafetyDatasetPreparer:
         except Exception as e:
             logger.warning(f"Could not load WildChat: {e}")
             return []
+        """
     
     def load_anthropic_red_team(self, max_samples: int = 10000) -> List[Dict]:
         """Load Anthropic's red team attempts dataset"""
         logger.info("Loading Anthropic red team dataset...")
         try:
-            dataset = load_dataset("Anthropic/hh-rlhf", "red-team-attempts", split="train")
+            # Try loading the dataset with default config
+            dataset = load_dataset("Anthropic/hh-rlhf", split="train")
             
             samples = []
-            for i, item in enumerate(tqdm(dataset, desc="Processing red team data")):
+            unsafe_count = 0
+            safe_count = 0
+            
+            for i, item in enumerate(tqdm(dataset, desc="Processing Anthropic data")):
                 if i >= max_samples:
                     break
                     
-                # Extract the red team prompt (usually harmful)
-                text = item.get('chosen', '') or item.get('text', '')
-                if '\n\nHuman:' in text:
-                    prompt = text.split('\n\nHuman:')[1].split('\n\nAssistant:')[0].strip()
-                    
-                    samples.append({
-                        'prompt': prompt,
-                        'label': 0,  # Red team attempts are unsafe
-                        'source': 'anthropic_red_team'
-                    })
-                    
-            logger.info(f"Loaded {len(samples)} samples from Anthropic red team")
+                # Extract text that might contain red team attempts
+                text = item.get('chosen', '') or item.get('rejected', '')
+                
+                # Look for human prompts in the conversation
+                if '\n\nHuman:' in text and '\n\nAssistant:' in text:
+                    # Extract human prompts
+                    human_parts = text.split('\n\nHuman:')
+                    for part in human_parts[1:]:  # Skip first empty part
+                        prompt = part.split('\n\nAssistant:')[0].strip()
+                        
+                        # Simple heuristic: red team attempts often have certain keywords
+                        # This is not perfect but gives us some harmful examples
+                        harmful_keywords = ['hack', 'steal', 'kill', 'bomb', 'illegal', 'drug', 
+                                          'weapon', 'hurt', 'harm', 'attack', 'violence', 'exploit']
+                        
+                        is_harmful = any(keyword in prompt.lower() for keyword in harmful_keywords)
+                        
+                        if len(prompt) > 20:  # Skip very short prompts
+                            samples.append({
+                                'prompt': prompt,
+                                'label': 0 if is_harmful else 1,  # 0 = unsafe, 1 = safe
+                                'source': 'anthropic_hh'
+                            })
+                            
+                            if is_harmful and unsafe_count < 3:
+                                logger.info(f"   [UNSAFE] Anthropic example: {prompt[:80]}...")
+                                unsafe_count += 1
+                            elif not is_harmful and safe_count < 3:
+                                logger.info(f"   [SAFE] Anthropic example: {prompt[:80]}...")
+                                safe_count += 1
+                                
+                        if len(samples) >= max_samples:
+                            break
+                            
+            final_unsafe = sum(1 for s in samples if s['label'] == 0)
+            final_safe = len(samples) - final_unsafe
+            logger.info(f"Loaded {len(samples)} samples from Anthropic HH-RLHF (Safe: {final_safe}, Unsafe: {final_unsafe})")
             return samples
             
         except Exception as e:
             logger.warning(f"Could not load Anthropic red team data: {e}")
+            logger.info("Skipping Anthropic dataset")
             return []
     
     def mutate_unsafe_to_safe(self, unsafe_prompts: List[str], num_mutations: int = 1) -> List[Dict]:
@@ -441,12 +507,19 @@ If you cannot create a genuinely safe version that meets all these criteria, res
         # Load all datasets
         all_samples = []
         
-        # Load specialized safety datasets with reduced samples
-        all_samples.extend(self.load_wildguard(max_samples=1000))
-        all_samples.extend(self.load_beavertails(max_samples=1000))
-        all_samples.extend(self.load_toxicchat(max_samples=1000))
-        all_samples.extend(self.load_wildchat_toxic(max_samples=1000))
-        all_samples.extend(self.load_anthropic_red_team(max_samples=1000))
+        # Load specialized safety datasets with adjusted samples
+        # Since WildGuard needs login and WildChat is too big, we'll load more from others
+        all_samples.extend(self.load_wildguard(max_samples=1000))  # May return empty if no login
+        all_samples.extend(self.load_beavertails(max_samples=2000))  # Increased
+        all_samples.extend(self.load_toxicchat(max_samples=2000))   # Increased
+        all_samples.extend(self.load_wildchat_toxic(max_samples=0))  # Skip - too large
+        all_samples.extend(self.load_anthropic_red_team(max_samples=2000))  # Increased
+        
+        # If we have fewer samples due to skipped datasets, load more from available ones
+        if len(all_samples) < 5000:
+            logger.info("Loading additional samples from available datasets...")
+            all_samples.extend(self.load_beavertails(max_samples=1000))
+            all_samples.extend(self.load_toxicchat(max_samples=1000))
         
         # Expect ~5K unsafe, which will become 10K after mutations
         # Final dataset: ~10K samples (balanced 50/50)

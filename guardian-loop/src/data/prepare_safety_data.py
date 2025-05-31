@@ -112,23 +112,20 @@ class SafetyDatasetPreparer:
                 if i >= max_samples:
                     break
                     
-                # BeaverTails has prompts with safety labels
-                prompt = item.get('prompt', '')
-                is_safe = item.get('is_safe', False)
+                # In BeaverTails format:
+                # is_safe=true means response is safe/harmless
+                # is_safe=false means response is unsafe/harmful
+                sample = {
+                    'prompt': item['prompt'],
+                    'response': item['response'],
+                    'label': 1 if not any(item['category'].values()) else 0,  # 1 for safe, 0 for unsafe
+                    'source': 'beavertails'  # Add source field
+                }
                 
-                samples.append({
-                    'prompt': prompt,
-                    'label': 1 if is_safe else 0,
-                    'source': 'beavertails',
-                    'categories': item.get('category', [])
-                })
-                
-                # Print examples
-                if is_safe and safe_count <= 3:
-                    logger.info(f"   [SAFE] BeaverTails example: {prompt[:80]}...")
+                samples.append(sample)
+                if sample['label'] == 1:
                     safe_count += 1
-                elif not is_safe and unsafe_count <= 3:
-                    logger.info(f"   [UNSAFE] BeaverTails example: {prompt[:80]}...")
+                else:
                     unsafe_count += 1
                     
             final_safe = sum(1 for s in samples if s['label'] == 1)
@@ -442,7 +439,7 @@ If you cannot create a genuinely safe version that meets all these criteria, res
         ]
         
         for prompt in unsafe_prompts[:100]:  # Limit for fallback
-            selected_mutations = np.random.choice(safe_mutations, size=min(num_mutations, len(safe_mutations)), replace=False)
+            selected_mutations = random.sample(safe_mutations, k=min(num_mutations, len(safe_mutations)))
             
             for mutation_fn in selected_mutations:
                 try:
@@ -515,10 +512,10 @@ If you cannot create a genuinely safe version that meets all these criteria, res
         # Load specialized safety datasets with adjusted samples
         # Since WildGuard needs login and WildChat is too big, we'll load more from others
         all_samples.extend(self.load_wildguard(max_samples=1000))  # May return empty if no login
-        all_samples.extend(self.load_beavertails(max_samples=2000))  # Increased
-        all_samples.extend(self.load_toxicchat(max_samples=2000))   # Increased
-        all_samples.extend(self.load_wildchat_toxic(max_samples=0))  # Skip - too large
-        all_samples.extend(self.load_anthropic_red_team(max_samples=2000))  # Increased
+        all_samples.extend(self.load_beavertails(max_samples=1000))  # Increased
+        all_samples.extend(self.load_toxicchat(max_samples=1000))   # Increased
+        all_samples.extend(self.load_wildchat_toxic(max_samples=1000))  # Incrased
+        # all_samples.extend(self.load_anthropic_red_team(max_samples=2000))  # Increased
         
         # If we have fewer samples due to skipped datasets, load more from available ones
         if len(all_samples) < 5000:
@@ -655,5 +652,5 @@ if __name__ == "__main__":
     preparer = SafetyDatasetPreparer()
     preparer.prepare_dataset(
         balance_ratio=0.5,  # 50% safe, 50% unsafe
-        use_mutations=True  # Use your mutation idea!
+        use_mutations=False  # Use your mutation idea!
     ) 

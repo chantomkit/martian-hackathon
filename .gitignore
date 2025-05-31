@@ -27,3 +27,4 @@ wheels/
 
 .venv/
 *.pem
+data/

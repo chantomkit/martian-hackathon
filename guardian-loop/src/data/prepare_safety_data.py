@@ -14,6 +14,8 @@ import numpy as np
 import random
 from collections import defaultdict
 import logging
+from huggingface_hub import login
+import dotenv
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -136,12 +138,9 @@ class SafetyDatasetPreparer:
     
     def load_wildchat_toxic(self, max_samples: int = 20000) -> List[Dict]:
         """Load toxic subset of WildChat - 150K+ real harmful conversations"""
-        logger.info("Skipping WildChat - dataset too large (14 x 200MB+ files)")
-        logger.info("Using other datasets for efficiency")
-        return []
-        
-        # Original implementation commented out to avoid large downloads
-        """
+        # logger.info("Skipping WildChat - dataset too large (14 x 200MB+ files)")
+        # logger.info("Using other datasets for efficiency")
+        # return []
         logger.info("Loading WildChat toxic subset...")
         try:
             # WildChat-1M has real conversations with toxicity annotations
@@ -175,7 +174,6 @@ class SafetyDatasetPreparer:
         except Exception as e:
             logger.warning(f"Could not load WildChat: {e}")
             return []
-        """
     
     def load_anthropic_red_team(self, max_samples: int = 10000) -> List[Dict]:
         """Skip Anthropic HH-RLHF - it's preference data, not safety labels"""
@@ -419,7 +417,7 @@ If you cannot create a genuinely safe version that meets all these criteria, res
         ]
         
         for prompt in unsafe_prompts[:100]:  # Limit for fallback
-            selected_mutations = np.random.choice(safe_mutations, size=min(num_mutations, len(safe_mutations)), replace=False)
+            selected_mutations = random.sample(safe_mutations, k=min(num_mutations, len(safe_mutations)))
             
             for mutation_fn in selected_mutations:
                 try:
@@ -946,5 +944,5 @@ if __name__ == "__main__":
     preparer = SafetyDatasetPreparer()
     preparer.prepare_dataset(
         balance_ratio=0.5,  # 50% safe, 50% unsafe
-        use_mutations=True  # Use your mutation idea!
+        use_mutations=False  # Use your mutation idea!
     ) 

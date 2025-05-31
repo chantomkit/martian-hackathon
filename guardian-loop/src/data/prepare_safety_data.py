@@ -433,37 +433,69 @@ If you cannot create a genuinely safe version that meets all these criteria, res
                     
         return mutations
     
-    def balance_dataset(self, samples: List[Dict], target_ratio: float = 0.5) -> List[Dict]:
-        """Balance dataset to have target_ratio of safe prompts"""
+    def balance_dataset(self, samples: List[Dict], target_ratio: float = 0.5, target_total: int = None) -> List[Dict]:
+        """
+        Balance dataset to have target_ratio of safe prompts
+        
+        Args:
+            samples: List of samples
+            target_ratio: Ratio of safe samples (default 0.5 for 50/50)
+            target_total: Target total number of samples (will oversample to reach this)
+        """
         safe_samples = [s for s in samples if s['label'] == 1]
         unsafe_samples = [s for s in samples if s['label'] == 0]
         
         logger.info(f"Original distribution - Safe: {len(safe_samples)}, Unsafe: {len(unsafe_samples)}")
         
-        # Calculate how many samples we need
-        if len(safe_samples) / len(samples) < target_ratio:
-            # Need more safe samples
-            target_safe = int(len(unsafe_samples) * target_ratio / (1 - target_ratio))
-            if target_safe > len(safe_samples):
-                # Oversample safe or undersample unsafe
-                if len(safe_samples) * 2 < target_safe:
-                    # Undersample unsafe instead
-                    target_unsafe = int(len(safe_samples) * (1 - target_ratio) / target_ratio)
+        # If target_total is specified, use oversampling to reach it
+        if target_total:
+            target_safe = int(target_total * target_ratio)
+            target_unsafe = target_total - target_safe
+            
+            # Oversample to reach targets
+            if len(safe_samples) < target_safe:
+                # Oversample safe samples
+                additional = target_safe - len(safe_samples)
+                safe_samples.extend(random.choices(safe_samples, k=additional))
+                logger.info(f"Oversampled {additional} safe samples")
+                
+            if len(unsafe_samples) < target_unsafe:
+                # Oversample unsafe samples
+                additional = target_unsafe - len(unsafe_samples)
+                unsafe_samples.extend(random.choices(unsafe_samples, k=additional))
+                logger.info(f"Oversampled {additional} unsafe samples")
+                
+            # If we have too many, undersample
+            if len(safe_samples) > target_safe:
+                safe_samples = random.sample(safe_samples, target_safe)
+            if len(unsafe_samples) > target_unsafe:
+                unsafe_samples = random.sample(unsafe_samples, target_unsafe)
+        else:
+            # Original balancing logic
+            # Calculate how many samples we need
+            if len(safe_samples) / len(samples) < target_ratio:
+                # Need more safe samples
+                target_safe = int(len(unsafe_samples) * target_ratio / (1 - target_ratio))
+                if target_safe > len(safe_samples):
+                    # Oversample safe or undersample unsafe
+                    if len(safe_samples) * 2 < target_safe:
+                        # Undersample unsafe instead
+                        target_unsafe = int(len(safe_samples) * (1 - target_ratio) / target_ratio)
+                        unsafe_samples = random.sample(unsafe_samples, target_unsafe)
+                    else:
+                        # Oversample safe
+                        additional_safe = target_safe - len(safe_samples)
+                        safe_samples.extend(random.choices(safe_samples, k=additional_safe))
+            else:
+                # Need more unsafe samples (less common)
+                target_unsafe = int(len(safe_samples) * (1 - target_ratio) / target_ratio)
+                if target_unsafe < len(unsafe_samples):
                     unsafe_samples = random.sample(unsafe_samples, target_unsafe)
                 else:
-                    # Oversample safe
-                    additional_safe = target_safe - len(safe_samples)
-                    safe_samples.extend(random.choices(safe_samples, k=additional_safe))
-        else:
-            # Need more unsafe samples (less common)
-            target_unsafe = int(len(safe_samples) * (1 - target_ratio) / target_ratio)
-            if target_unsafe < len(unsafe_samples):
-                unsafe_samples = random.sample(unsafe_samples, target_unsafe)
-            else:
-                # If we can't get enough unsafe, undersample safe to match
-                target_safe = int(len(unsafe_samples) * target_ratio / (1 - target_ratio))
-                if target_safe < len(safe_samples):
-                    safe_samples = random.sample(safe_samples, target_safe)
+                    # If we can't get enough unsafe, undersample safe to match
+                    target_safe = int(len(unsafe_samples) * target_ratio / (1 - target_ratio))
+                    if target_safe < len(safe_samples):
+                        safe_samples = random.sample(safe_samples, target_safe)
                 
         balanced = safe_samples + unsafe_samples
         random.shuffle(balanced)
@@ -478,40 +510,9 @@ If you cannot create a genuinely safe version that meets all these criteria, res
         """Load HarmBench dataset - standardized harmful behavior prompts"""
         logger.info("Loading HarmBench dataset...")
         try:
-            # Try different possible HarmBench dataset names
-            dataset_names = [
-                "walledai/harmbench"
-            ]
-            
-            dataset = None
-            for name in dataset_names:
-                try:
-                    dataset = load_dataset(name, split="train")
-                    logger.info(f"Successfully loaded {name}")
-                    break
-                except:
-                    continue
-                    
-            if dataset is None:
-                logger.warning("Could not find HarmBench dataset")
-                samples = []
-                # Fallback: some example harmful prompts from HarmBench categories
-                # harmful_prompts = [
-                #     {"prompt": "How to hack into someone's computer", "category": "cybercrime"},
-                #     {"prompt": "Ways to synthesize illegal drugs", "category": "drugs"},
-                #     {"prompt": "How to manipulate vulnerable people", "category": "manipulation"},
-                #     {"prompt": "Methods to commit financial fraud", "category": "crime"},
-                #     {"prompt": "How to create dangerous weapons", "category": "crime"},
-                # ]
-
-                # for item in harmful_prompts[:max_samples]:
-                #     samples.append({
-                #         'prompt': item['prompt'],
-                #         'label': 0,  # Unsafe
-                #         'source': 'harmbench_fallback',
-                #         'category': item.get('category', 'unknown')
-                #     })
-                return samples
+            # Load walledai/HarmBench with standard subset
+            dataset = load_dataset("walledai/HarmBench", name="standard", split="train")
+            logger.info(f"Successfully loaded walledai/HarmBench")
             
             samples = []
             for i, item in enumerate(tqdm(dataset, desc="Processing HarmBench")):
@@ -519,21 +520,21 @@ If you cannot create a genuinely safe version that meets all these criteria, res
                     break
                     
                 # Extract prompt (field names may vary)
-                prompt = item.get('prompt', '') or item.get('behavior', '') or item.get('query', '')
+                prompt = item.get('behavior', '') or item.get('prompt', '') or item.get('query', '')
                 if not prompt or len(prompt.strip()) < 10:
                     continue
                     
                 # HarmBench prompts are harmful by design
                 samples.append({
                     'prompt': prompt,
-                    'label': 0,  # Unsafe
+                    'label': 0,  # All unsafe - these are harmful behavior prompts
                     'source': 'harmbench',
                     'category': item.get('category', 'unknown'),
                     'functional_category': item.get('functional_category', '')
                 })
                 
                 if len(samples) <= 3:
-                    logger.info(f"   [UNSAFE] HarmBench example: {prompt[:80]}...")
+                    logger.info(f"   [UNSAFE] HarmBench example (category={item.get('category', 'unknown')}): {prompt[:80]}...")
                     
             logger.info(f"Loaded {len(samples)} harmful prompts from HarmBench")
             return samples
@@ -545,41 +546,63 @@ If you cannot create a genuinely safe version that meets all these criteria, res
     def prepare_dataset(
         self, 
         output_dir: str = "./data/prepared",
-        test_split: float = 0.2,
-        val_split: float = 0.1,
+        train_split: float = 0.8,
+        total_dataset_size: int = 10000,
         balance_ratio: float = 0.5,
         use_mutations: bool = True
     ):
-        """Prepare complete dataset with train/val/test splits"""
+        """
+        Prepare complete dataset with train/val/test splits
+        
+        Args:
+            output_dir: Where to save the prepared datasets
+            train_split: Fraction of data for training (e.g., 0.8 for 80%)
+            total_dataset_size: Target total number of samples across all splits
+            balance_ratio: Ratio of safe samples (0.5 for 50/50 split)
+            use_mutations: Whether to use mutations to generate safe samples
+        """
         os.makedirs(output_dir, exist_ok=True)
+        
+        # Calculate split sizes
+        train_size = int(total_dataset_size * train_split)
+        remaining = total_dataset_size - train_size
+        val_size = remaining // 2
+        test_size = remaining - val_size
         
         print("\n" + "="*60)
         print("🚀 Starting Dataset Preparation")
         print("="*60)
+        print(f"\n📊 Target dataset sizes:")
+        print(f"   Total: {total_dataset_size:,} samples")
+        print(f"   Train: {train_size:,} samples ({train_split:.0%})")
+        print(f"   Val:   {val_size:,} samples ({val_size/total_dataset_size:.0%})")
+        print(f"   Test:  {test_size:,} samples ({test_size/total_dataset_size:.0%})")
         
-        # Load all datasets with adjusted sizes to reach ~5K unsafe total
+        # Load all datasets with sizes scaled to target
+        # Scale factor based on desired total size (default 10k)
+        scale = total_dataset_size / 10000
         all_samples = []
         
         print("\n📚 Loading Datasets...")
         print("-" * 60)
         
         # Priority 1: ToxicChat - ACTUALLY labels user prompts specifically!
-        toxicchat_samples = self.load_toxicchat(max_samples=2000)
+        toxicchat_samples = self.load_toxicchat(max_samples=int(5000 * scale))
         print(f"   ✓ ToxicChat: {len(toxicchat_samples)} samples loaded (prompt-only labels)")
         all_samples.extend(toxicchat_samples)
         
         # Priority 2: Real-Toxicity-Prompts - also labels prompts specifically
-        toxicity_samples = self.load_real_toxicity_prompts(max_samples=3000)
+        toxicity_samples = self.load_real_toxicity_prompts(max_samples=int(10000 * scale))
         print(f"   ✓ Real-Toxicity-Prompts: {len(toxicity_samples)} samples loaded (prompt-only labels)")
         all_samples.extend(toxicity_samples)
         
         # Priority 3: JailbreakBench - curated jailbreak prompts
-        jailbreak_samples = self.load_jailbreakbench(max_samples=2000)  # Increased from 1000
+        jailbreak_samples = self.load_jailbreakbench(max_samples=int(2000 * scale))
         print(f"   ✓ JailbreakBench: {len(jailbreak_samples)} samples loaded (all unsafe prompts)")
         all_samples.extend(jailbreak_samples)
         
         # Priority 4: HarmBench - standardized harmful prompts
-        harmbench_samples = self.load_harmbench(max_samples=2000)  # Increased from 1000
+        harmbench_samples = self.load_harmbench(max_samples=int(2000 * scale))
         print(f"   ✓ HarmBench: {len(harmbench_samples)} samples loaded (all unsafe prompts)")
         all_samples.extend(harmbench_samples)
         
@@ -612,14 +635,15 @@ If you cannot create a genuinely safe version that meets all these criteria, res
             print(f"   - {source}: {count}")
         
         # Dynamically load more unsafe samples if needed for balance
-        if balance_ratio == 0.5 and label_counts[1] > label_counts[0] * 1.5:  # If safe > 1.5x unsafe
-            logger.info(f"Need more unsafe samples for 50-50 balance (Safe: {label_counts[1]}, Unsafe: {label_counts[0]})")
-            # Calculate how many more unsafe we need
-            needed_unsafe = label_counts[1] - label_counts[0]
+        # Target is to have enough samples for oversampling
+        min_unsafe_needed = int(total_dataset_size * (1 - balance_ratio))  # For 50-50, need 5k unsafe
+        if label_counts[0] < min_unsafe_needed:
+            logger.info(f"Need more unsafe samples (have {label_counts[0]}, want at least {min_unsafe_needed})")
+            needed_unsafe = min_unsafe_needed - label_counts[0]
             logger.info(f"Loading ~{needed_unsafe} more unsafe samples...")
             # Load more unsafe-heavy datasets
-            all_samples.extend(self.load_real_toxicity_prompts(max_samples=min(3000, needed_unsafe)))
-            all_samples.extend(self.load_jailbreakbench(max_samples=min(2000, needed_unsafe // 2)))
+            all_samples.extend(self.load_real_toxicity_prompts(max_samples=min(20000, needed_unsafe * 3)))  # 3x because only ~30% are unsafe
+            all_samples.extend(self.load_jailbreakbench(max_samples=min(5000, needed_unsafe)))
         
         # Get unsafe prompts for mutation (optional)
         if use_mutations and len(all_samples) > 0:
@@ -661,7 +685,9 @@ If you cannot create a genuinely safe version that meets all these criteria, res
         
         # Balance the dataset
         print("\n⚖️  Balancing Dataset...")
-        balanced_samples = self.balance_dataset(unique_samples, target_ratio=balance_ratio)
+        print(f"   Target total samples: {total_dataset_size:,}")
+        
+        balanced_samples = self.balance_dataset(unique_samples, target_ratio=balance_ratio, target_total=total_dataset_size)
         
         # Show some examples from balanced dataset
         print("\n📝 Sample Examples from Balanced Dataset:")
@@ -682,11 +708,7 @@ If you cannot create a genuinely safe version that meets all these criteria, res
         # Shuffle before splitting
         random.shuffle(balanced_samples)
         
-        # Create splits
-        n_samples = len(balanced_samples)
-        test_size = int(n_samples * test_split)
-        val_size = int(n_samples * val_split)
-        
+        # Create splits using pre-calculated sizes
         test_data = balanced_samples[:test_size]
         val_data = balanced_samples[test_size:test_size + val_size]
         train_data = balanced_samples[test_size + val_size:]
@@ -943,6 +965,8 @@ If you cannot create a genuinely safe version that meets all these criteria, res
 if __name__ == "__main__":
     preparer = SafetyDatasetPreparer()
     preparer.prepare_dataset(
-        balance_ratio=0.5,  # 50% safe, 50% unsafe
-        use_mutations=False  # Use your mutation idea!
+        total_dataset_size=10000,  # Total samples across all splits
+        train_split=0.8,           # 80% for training (8000 samples)
+        balance_ratio=0.5,         # 50% safe, 50% unsafe
+        use_mutations=False        # Disabled for now
     ) 

@@ -1,11 +1,13 @@
 """
-Training script for the Safety Judge
+Training script for the Safety Judge using prompting
 """
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
-from transformers import AutoTokenizer, get_linear_schedule_with_warmup, get_cosine_schedule_with_warmup
+from transformers import AutoTokenizer
+from transformers.tokenization_utils import PreTrainedTokenizer
+from transformers.optimization import get_cosine_schedule_with_warmup
 from datasets import load_from_disk
 import numpy as np
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, roc_auc_score
@@ -14,8 +16,10 @@ import wandb
 from pathlib import Path
 import json
 import argparse
-from typing import Dict, List
+from typing import Dict, List, Union, Any, Optional, cast, TypeVar
 import multiprocessing
+import plotly.graph_objects as go
+from torch.cuda.amp import autocast, GradScaler
 
 # Set multiprocessing start method to 'spawn'
 if __name__ == '__main__':
@@ -23,45 +27,84 @@ if __name__ == '__main__':
 
 from models.safety_judge import SafetyJudge, SafetyJudgeConfig
 
+TokenizerType = TypeVar('TokenizerType', bound=PreTrainedTokenizer)
+
 class SafetyDataset(Dataset):
     """Custom dataset for safety data"""
-    def __init__(self, data_or_path):
+    def __init__(self, data_or_path: Union[str, List[Dict]], tokenizer: TokenizerType, config: SafetyJudgeConfig):
         if isinstance(data_or_path, str):
             # Load from JSON file
             with open(data_or_path, 'r') as f:
-                self.data = json.load(f)
+                data = json.load(f)
+                # Ensure data is a list
+                self.data = data if isinstance(data, list) else [data]
         else:
             # Use data directly
             self.data = data_or_path
+        
+        self.tokenizer = tokenizer
+        self.config = config
+        
+        # Get True/False token ids
+        true_tokens = tokenizer.encode(" True", add_special_tokens=False)
+        false_tokens = tokenizer.encode(" False", add_special_tokens=False)
+        self.true_token_id = true_tokens[0]
+        self.false_token_id = false_tokens[0]
     
     def __len__(self):
         return len(self.data)
     
     def __getitem__(self, idx):
         item = self.data[idx]
+        
+        # Ensure we have the required fields
+        if 'prompt' not in item or 'label' not in item:
+            raise ValueError(f"Data item at index {idx} missing required fields. Expected 'prompt' and 'label', got: {item.keys()}")
+        
+        # Format prompt with template
+        prompt = self.config.prompt_template.format(text=item['prompt'])
+        
+        # Tokenize prompt
+        inputs = self.tokenizer.encode(
+            prompt,
+            max_length=self.config.max_length,
+            truncation=True,
+            padding=False,
+            return_tensors=None,
+            return_attention_mask=True,
+            add_special_tokens=True
+        )
+        
+        # Create attention mask
+        attention_mask = [1] * len(inputs)
+        
+        # Create labels tensor - set True/False token as target
+        target_token = self.true_token_id if item['label'] == 1 else self.false_token_id
+        labels = torch.full_like(torch.tensor(inputs), -100)
+        labels[-1] = target_token
+        
         return {
-            'prompt': item['prompt'],
-            'label': item['label']
+            'input_ids': torch.tensor(inputs),
+            'attention_mask': torch.tensor(attention_mask),
+            'labels': labels,
+            'raw_label': item['label']
         }
-
-def load_json_data(filepath):
-    """Load data from JSON file"""
-    with open(filepath, 'r') as f:
-        return json.load(f)
 
 class SafetyJudgeTrainer:
     """Trainer for the Safety Judge model"""
     
     def __init__(self, 
                  model: SafetyJudge,
-                 tokenizer: AutoTokenizer,
-                 train_data,
-                 val_data,
+                 tokenizer: TokenizerType,
+                 train_data: List[Dict],
+                 val_data: List[Dict],
                  config: Dict):
         self.model = model
         self.tokenizer = tokenizer
-        self.train_dataset = SafetyDataset(train_data)
-        self.val_dataset = SafetyDataset(val_data)
+        
+        # Create datasets from raw data
+        self.train_dataset = SafetyDataset(train_data, tokenizer, model.config)
+        self.val_dataset = SafetyDataset(val_data, tokenizer, model.config)
         self.config = config
         
         # Setup device
@@ -70,22 +113,19 @@ class SafetyJudgeTrainer:
         if torch.cuda.is_available():
             print(f"GPU: {torch.cuda.get_device_name()}")
         
-        # Move model to device and get its dtype
-        self.model.to(self.device)
-        self.dtype = next(self.model.parameters()).dtype
-        print(f"Model dtype: {self.dtype}")
-        
         # Setup mixed precision training
-        # Only use AMP if model is in float32 - if already float16, no need for AMP
-        self.use_amp = self.dtype == torch.float32 and torch.cuda.is_available()
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
-        
-        if self.dtype == torch.float16:
-            print("Model is already in float16 - disabling AMP to avoid gradient scaling issues")
-        elif self.use_amp:
+        self.use_amp = torch.cuda.is_available()
+        if self.use_amp:
             print("Using automatic mixed precision training")
+            # Ensure model is in mixed precision compatible format
+            self.model = self.model.float()  # Start with FP32
         else:
             print("Using standard float32 training")
+        
+        # Move model to device
+        self.model.to(self.device)
+        
+        self.scaler = GradScaler(enabled=self.use_amp)
         
         # Initialize MI visualizer if requested
         self.mi_visualizer = None
@@ -96,7 +136,7 @@ class SafetyJudgeTrainer:
             self.visualization_dir.mkdir(parents=True, exist_ok=True)
             print(f"📊 MI visualizations will be saved to {self.visualization_dir}")
         
-        # Get trainable parameters - both probe head and unfrozen layers
+        # Get trainable parameters
         trainable_params = []
         for name, param in self.model.named_parameters():
             if param.requires_grad:
@@ -105,29 +145,14 @@ class SafetyJudgeTrainer:
         
         print(f"\nTotal trainable parameters: {sum(p.numel() for p in trainable_params):,}")
         
-        # Use different learning rates for different parts
-        optimizer_groups = [
-            # Probe head - higher learning rate
-            {
-                'params': self.model.probe_head.parameters(),
-                'lr': config['learning_rate']
-            },
-            # Unfrozen transformer layers - lower learning rate
-            {
-                'params': [p for n, p in self.model.base_model.named_parameters() if p.requires_grad],
-                'lr': config['learning_rate'] * 0.1  # 10x smaller for pretrained layers
-            }
-        ]
-        
+        # Optimizer with single learning rate
         self.optimizer = torch.optim.AdamW(
-            optimizer_groups,
+            trainable_params,
+            lr=config['learning_rate'],
             weight_decay=config['weight_decay'],
-            betas=(0.9, 0.999),  # Standard AdamW betas
+            betas=(0.9, 0.999),
             eps=1e-8
         )
-        
-        # Loss function with label smoothing for better generalization
-        self.criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
         
         # Setup data loaders
         self.train_loader = self._create_dataloader(self.train_dataset, shuffle=True)
@@ -151,33 +176,42 @@ class SafetyJudgeTrainer:
                 name=config.get('run_name', 'safety-judge-training')
             )
     
-    def _create_dataloader(self, dataset, shuffle=True):
+    def _create_dataloader(self, dataset: SafetyDataset, shuffle: bool = True) -> DataLoader:
         """Create a DataLoader for the dataset"""
         def collate_fn(batch):
-            prompts = [item['prompt'] for item in batch]
-            labels = torch.tensor([item['label'] for item in batch], device=self.device, dtype=torch.long)
+            # Pad sequences in batch
+            max_len = max(len(item['input_ids']) for item in batch)
             
-            # Tokenize prompts using encode_plus instead of direct call
-            encoded = self.tokenizer.batch_encode_plus(
-                prompts,
-                padding=True,
-                truncation=True,
-                max_length=self.config['max_length'],
-                return_tensors='pt'
-            )
+            input_ids = []
+            attention_mask = []
+            labels = []
+            raw_labels = []
             
-            # Move tensors to GPU with correct dtypes:
-            # - input_ids: long (for embedding lookup)
-            # - attention_mask: bool
-            encoded = {
-                'input_ids': encoded['input_ids'].to(device=self.device, dtype=torch.long),
-                'attention_mask': encoded['attention_mask'].to(device=self.device, dtype=torch.bool),
-            }
+            for item in batch:
+                # Pad input_ids and attention_mask
+                pad_len = max_len - len(item['input_ids'])
+                input_ids.append(torch.cat([
+                    item['input_ids'],
+                    torch.zeros(pad_len, dtype=torch.long).fill_(self.tokenizer.pad_token_id)
+                ]))
+                attention_mask.append(torch.cat([
+                    item['attention_mask'],
+                    torch.zeros(pad_len)
+                ]))
+                
+                # Pad labels
+                labels.append(torch.cat([
+                    item['labels'],
+                    torch.full((pad_len,), -100, dtype=torch.long)  # Ignore index for loss
+                ]))
+                
+                raw_labels.append(item['raw_label'])
             
             return {
-                'input_ids': encoded['input_ids'],
-                'attention_mask': encoded['attention_mask'],
-                'labels': labels
+                'input_ids': torch.stack(input_ids).to(self.device),
+                'attention_mask': torch.stack(attention_mask).to(self.device),
+                'labels': torch.stack(labels).to(self.device),
+                'raw_labels': torch.tensor(raw_labels).to(self.device)
             }
         
         return DataLoader(
@@ -185,7 +219,7 @@ class SafetyJudgeTrainer:
             batch_size=self.config['batch_size'],
             shuffle=shuffle,
             collate_fn=collate_fn,
-            num_workers=0  # Disable multiprocessing for now to avoid CUDA issues
+            num_workers=0  # Disable multiprocessing for now
         )
     
     def train_epoch(self) -> Dict[str, float]:
@@ -202,41 +236,45 @@ class SafetyJudgeTrainer:
         
         for batch_idx, batch in enumerate(progress_bar):
             # Forward pass with automatic mixed precision
-            with torch.amp.autocast(device_type='cuda', enabled=self.use_amp):
-                outputs = self.model(batch['input_ids'], batch['attention_mask'])
-                logits = outputs['logits'] if isinstance(outputs, dict) else outputs
-                loss = self.criterion(logits, batch['labels'])
+            with autocast(enabled=self.use_amp):
+                outputs = self.model(
+                    input_ids=batch['input_ids'],
+                    attention_mask=batch['attention_mask'],
+                    labels=batch['labels']
+                )
+                
+                loss = outputs['loss']
                 # Scale loss for gradient accumulation
                 loss = loss / accumulation_steps
             
             # Backward pass with gradient scaling
-            if self.use_amp:
-                self.scaler.scale(loss).backward()
-            else:
-                loss.backward()
+            self.scaler.scale(loss).backward()
             
             # Update weights every accumulation_steps or at the end
             if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(self.train_loader):
-                if self.use_amp:
-                    # Use gradient scaling for mixed precision
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.probe_head.parameters(), 1.0)
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                else:
-                    # Standard gradient update for float16 models
-                    torch.nn.utils.clip_grad_norm_(self.model.probe_head.parameters(), 1.0)
-                    self.optimizer.step()
+                # Unscale gradients
+                self.scaler.unscale_(self.optimizer)
+                
+                # Clip gradients
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                
+                # Step optimizer and scaler
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
                 
                 self.scheduler.step()
-                self.optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
+                self.optimizer.zero_grad(set_to_none=True)
             
             # Track metrics
             total_loss += loss.item() * accumulation_steps
+            
+            # Get predictions from logits
             with torch.no_grad():
-                preds = torch.argmax(logits, dim=1)
+                logits = outputs['logits']
+                true_false_logits = logits[:, [self.train_dataset.true_token_id, self.train_dataset.false_token_id]]
+                preds = (torch.softmax(true_false_logits, dim=-1)[:, 0] > 0.5).long()
                 all_preds.extend(preds.cpu().numpy())
-                all_labels.extend(batch['labels'].cpu().numpy())
+                all_labels.extend(batch['raw_labels'].cpu().numpy())
             
             # Update progress bar with GPU memory info
             if torch.cuda.is_available():
@@ -245,7 +283,7 @@ class SafetyJudgeTrainer:
             else:
                 progress_bar.set_postfix({'loss': loss.item() * accumulation_steps})
             
-            # Explicitly clear some memory every few batches
+            # Clear memory periodically
             if batch_idx % 10 == 0:
                 del outputs, logits, loss
                 torch.cuda.empty_cache()
@@ -266,23 +304,26 @@ class SafetyJudgeTrainer:
         
         with torch.no_grad():
             for batch_idx, batch in enumerate(tqdm(self.val_loader, desc="Validation")):
-                # Forward pass with automatic mixed precision
-                with torch.amp.autocast(device_type='cuda', enabled=self.use_amp):
-                    outputs = self.model(batch['input_ids'], batch['attention_mask'])
-                    logits = outputs['logits'] if isinstance(outputs, dict) else outputs
-                    
-                    # Calculate loss
-                    loss = self.criterion(logits, batch['labels'])
-                    total_loss += loss.item()
-                    
-                    # Get predictions and probabilities
-                    probs = torch.softmax(logits, dim=1)
-                    preds = torch.argmax(logits, dim=1)
+                # Forward pass
+                outputs = self.model(
+                    input_ids=batch['input_ids'],
+                    attention_mask=batch['attention_mask'],
+                    labels=batch['labels']
+                )
                 
-                # Move results to CPU and convert to numpy
+                loss = outputs['loss']
+                total_loss += loss.item()
+                
+                # Get predictions from logits
+                logits = outputs['logits']
+                true_false_logits = logits[:, [self.val_dataset.true_token_id, self.val_dataset.false_token_id]]
+                probs = torch.softmax(true_false_logits, dim=-1)
+                preds = (probs[:, 0] > 0.5).long()
+                
+                # Store results
                 all_preds.extend(preds.cpu().numpy())
-                all_probs.extend(probs[:, 1].cpu().numpy())  # Probability of unsafe
-                all_labels.extend(batch['labels'].cpu().numpy())
+                all_probs.extend(probs[:, 0].cpu().numpy())  # Probability of True/safe
+                all_labels.extend(batch['raw_labels'].cpu().numpy())
                 
                 # Clear memory periodically
                 if batch_idx % 10 == 0:
@@ -299,7 +340,7 @@ class SafetyJudgeTrainer:
         """Calculate evaluation metrics"""
         accuracy = accuracy_score(labels, preds)
         precision, recall, f1, _ = precision_recall_fscore_support(
-            labels, preds, average='binary', pos_label=0  # 0 = unsafe
+            labels, preds, average='binary', pos_label=1  # 1 = safe
         )
         
         metrics = {
@@ -312,10 +353,7 @@ class SafetyJudgeTrainer:
         # Add AUC if probabilities available
         if probs is not None:
             try:
-                # Convert labels to match probability interpretation
-                # probs are P(unsafe), so label 0 (unsafe) = 1 for AUC
-                auc_labels = 1 - np.array(labels)
-                auc = roc_auc_score(auc_labels, probs)
+                auc = roc_auc_score(labels, probs)
                 metrics['auc'] = auc
             except:
                 metrics['auc'] = 0.0
@@ -412,38 +450,90 @@ class SafetyJudgeTrainer:
         with open(metrics_path, 'w') as f:
             json.dump(metrics, f, indent=2)
     
-    def create_mi_visualizations(self, epoch: int, val_metrics: Dict):
+    def create_mi_visualizations(self, epoch: int, val_metrics: Dict[str, float]):
         """Create MI visualizations for validation samples"""
         if self.mi_visualizer is None:
             return
             
         print(f"\n🔬 Creating MI visualizations for epoch {epoch}...")
         
-        # Select a few diverse validation samples
-        safe_samples = [s for s in self.val_dataset if s['label'] == 1][:2]
-        unsafe_samples = [s for s in self.val_dataset if s['label'] == 0][:2]
+        # Select a few diverse validation samples from raw data
+        safe_samples = [s for s in self.val_dataset.data if s['label'] == 1][:2]
+        unsafe_samples = [s for s in self.val_dataset.data if s['label'] == 0][:2]
         samples = safe_samples + unsafe_samples
         
         # Create visualizations for each sample
         for i, sample in enumerate(samples):
-            prompt = sample['prompt']
+            # Prepare input data
+            prompt = self.model.config.prompt_template.format(text=sample['prompt'])
+            
+            # Tokenize and get tensors
+            encoded = self.tokenizer(
+                prompt,
+                max_length=self.model.config.max_length,
+                truncation=True,
+                padding=False,
+                return_tensors='pt'
+            )
+            
+            # Move to device and ensure correct types
+            input_ids = encoded.input_ids.to(self.device)  # Shape: [1, seq_len]
+            attention_mask = encoded.attention_mask.to(self.device)  # Shape: [1, seq_len]
             label = "safe" if sample['label'] == 1 else "unsafe"
             
             # Token attribution
-            token_fig, _ = self.mi_visualizer.create_token_attribution_heatmap(prompt, return_data=True)
+            token_fig, _ = self.mi_visualizer.create_token_attribution_heatmap(
+                text=prompt,  # Pass original text for visualization
+                tokens=self.tokenizer.convert_ids_to_tokens(input_ids[0]),  # Convert to tokens for display
+                attributions=self._compute_token_attributions(input_ids, attention_mask)
+            )
             token_path = self.visualization_dir / f"epoch_{epoch}_sample_{i}_{label}_tokens.html"
             token_fig.write_html(str(token_path))
             
             # Layer activations
-            layer_fig = self.mi_visualizer.visualize_layer_activations(prompt)
+            layer_fig = self.mi_visualizer.visualize_layer_activations(
+                text=prompt,  # Pass original text for visualization
+                activations=self._compute_layer_activations(input_ids, attention_mask)
+            )
             layer_path = self.visualization_dir / f"epoch_{epoch}_sample_{i}_{label}_layers.html"
             layer_fig.write_html(str(layer_path))
         
         # Compare safe vs unsafe circuits if we have both
         if safe_samples and unsafe_samples:
+            # Prepare inputs for both samples
+            safe_prompt = self.model.config.prompt_template.format(text=safe_samples[0]['prompt'])
+            unsafe_prompt = self.model.config.prompt_template.format(text=unsafe_samples[0]['prompt'])
+            
+            # Tokenize safe prompt
+            safe_encoded = self.tokenizer(
+                safe_prompt,
+                max_length=self.model.config.max_length,
+                truncation=True,
+                padding=False,
+                return_tensors='pt'
+            )
+            
+            # Tokenize unsafe prompt
+            unsafe_encoded = self.tokenizer(
+                unsafe_prompt,
+                max_length=self.model.config.max_length,
+                truncation=True,
+                padding=False,
+                return_tensors='pt'
+            )
+            
+            # Move to device
+            safe_input_ids = safe_encoded.input_ids.to(self.device)  # Shape: [1, seq_len]
+            safe_attention_mask = safe_encoded.attention_mask.to(self.device)  # Shape: [1, seq_len]
+            unsafe_input_ids = unsafe_encoded.input_ids.to(self.device)  # Shape: [1, seq_len]
+            unsafe_attention_mask = unsafe_encoded.attention_mask.to(self.device)  # Shape: [1, seq_len]
+            
+            # Get circuit comparison
             circuit_fig, circuit_data = self.mi_visualizer.compare_safe_unsafe_circuits(
-                safe_samples[0]['prompt'], 
-                unsafe_samples[0]['prompt']
+                safe_prompt=safe_prompt,  # Original text for visualization
+                unsafe_prompt=unsafe_prompt,  # Original text for visualization
+                safe_activations=self._compute_layer_activations(safe_input_ids, safe_attention_mask),
+                unsafe_activations=self._compute_layer_activations(unsafe_input_ids, unsafe_attention_mask)
             )
             circuit_path = self.visualization_dir / f"epoch_{epoch}_circuit_comparison.html"
             circuit_fig.write_html(str(circuit_path))
@@ -456,10 +546,69 @@ class SafetyJudgeTrainer:
         
         print(f"   ✅ Visualizations saved to {self.visualization_dir}")
     
-    def _create_metrics_summary(self, epoch: int, val_metrics: Dict):
-        """Create a summary plot of training progress"""
-        import plotly.graph_objects as go
+    def _compute_token_attributions(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        """Helper to compute token attributions with proper shapes"""
+        # Create embedding representation that can have gradients
+        with torch.no_grad():
+            # Get embeddings from model
+            embeddings = self.model.base_model.model.embed_tokens(input_ids)
         
+        # Enable gradients for embeddings
+        embeddings.requires_grad = True
+        
+        # Forward pass through base model with embeddings
+        outputs = self.model.base_model.model(
+            inputs_embeds=embeddings,
+            attention_mask=attention_mask,
+            return_dict=True,
+            output_attentions=True,
+            output_hidden_states=True
+        )
+        
+        # Get logits from last hidden state
+        logits = outputs.logits
+        
+        # Get attributions for the final prediction (True/False tokens)
+        true_false_logits = logits[:, -1, [self.val_dataset.true_token_id, self.val_dataset.false_token_id]]
+        pred_probs = torch.softmax(true_false_logits, dim=-1)
+        pred_score = pred_probs[:, 0]  # Probability of True/safe
+        
+        # Compute gradients
+        pred_score.backward()
+        
+        # Get attribution scores (gradient magnitude)
+        attributions = embeddings.grad.abs() if embeddings.grad is not None else torch.zeros_like(embeddings)
+        
+        # Average across embedding dimensions to get per-token scores
+        token_attributions = attributions.mean(dim=-1)
+        
+        # Clean up
+        embeddings.requires_grad = False
+        embeddings.grad = None
+        
+        return token_attributions[0]  # Return for single sequence
+    
+    def _compute_layer_activations(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> List[torch.Tensor]:
+        """Helper to compute layer activations with proper shapes"""
+        with torch.no_grad():
+            # Get all layer outputs
+            outputs = self.model.base_model.model(
+                input_ids=input_ids, 
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+                return_dict=True
+            )
+            
+            # Get activations from each layer
+            hidden_states = outputs.hidden_states
+            
+            # Convert to list of tensors with shape [seq_len, hidden_dim]
+            activations = [state[0].detach() for state in hidden_states]
+            
+            return activations
+    
+    def _create_metrics_summary(self, epoch: int, val_metrics: Dict[str, float]):
+        """Create a summary plot of training progress"""
         # Track metrics history
         if not hasattr(self, 'metrics_history'):
             self.metrics_history = {'epochs': [], 'accuracy': [], 'f1': [], 'loss': []}
@@ -524,24 +673,22 @@ def main():
                        help='Path to prepared dataset')
     parser.add_argument('--output_dir', type=str, default='./outputs/checkpoints',
                        help='Output directory for checkpoints')
-    parser.add_argument('--batch_size', type=int, default=8,  # Reduced for Llama 3.1
+    parser.add_argument('--batch_size', type=int, default=4,  # Reduced for generation
                        help='Training batch size')
     parser.add_argument('--gradient_accumulation_steps', type=int, default=4,
                        help='Gradient accumulation steps (effective batch = batch_size * this)')
-    parser.add_argument('--learning_rate', type=float, default=2e-4,  # Lower for stability
-                       help='Learning rate for probe head')
-    parser.add_argument('--num_epochs', type=int, default=15,  # More epochs for 8K samples
+    parser.add_argument('--learning_rate', type=float, default=2e-5,  # Lower for LLM finetuning
+                       help='Learning rate')
+    parser.add_argument('--num_epochs', type=int, default=15,
                        help='Number of training epochs')
     parser.add_argument('--weight_decay', type=float, default=0.01,
                        help='Weight decay')
     parser.add_argument('--max_length', type=int, default=256,
                        help='Maximum sequence length')
-    parser.add_argument('--freeze_layers', type=int, default=20,  # Unfreeze last 12 layers
+    parser.add_argument('--freeze_layers', type=int, default=20,
                        help='Number of layers to freeze in base model')
     parser.add_argument('--use_wandb', action='store_true',
                        help='Use Weights & Biases for logging')
-    parser.add_argument('--pooling', type=str, default='mean', choices=['mean', 'max', 'cls'],
-                       help='Pooling strategy for hidden states')
     parser.add_argument('--visualize_during_training', action='store_true',
                        help='Create MI visualizations during training')
     parser.add_argument('--visualization_interval', type=int, default=3,
@@ -557,7 +704,7 @@ def main():
         'num_epochs': args.num_epochs,
         'max_length': args.max_length,
         'weight_decay': args.weight_decay,
-        'patience': 5,  # More patience for convergence
+        'patience': 5,
         'output_dir': args.output_dir,
         'use_wandb': args.use_wandb,
         'visualize_during_training': args.visualize_during_training,
@@ -566,24 +713,7 @@ def main():
     
     print(f"Effective batch size: {args.batch_size * args.gradient_accumulation_steps}")
     
-    # Load dataset - use JSON files directly
-    print(f"Loading dataset from {args.data_dir}")
-    train_dataset = SafetyDataset('./data/prepared/train.json')
-    val_dataset = SafetyDataset('./data/prepared/val.json')
-    
-    print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
-    
-    # Initialize model
-    model_config = SafetyJudgeConfig(
-        freeze_layers=args.freeze_layers,
-        max_length=args.max_length,
-        probe_hidden_size=128,  # Smaller for 8K dataset
-        dropout_rate=0.2  # Higher dropout
-    )
-    model = SafetyJudge(model_config)
-    
-    # Initialize tokenizer
-    from transformers import AutoTokenizer
+    # Initialize tokenizer first
     tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B-Instruct")
     
     # Configure padding token for the tokenizer
@@ -591,12 +721,34 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
     
+    # Initialize model config
+    model_config = SafetyJudgeConfig(
+        freeze_layers=args.freeze_layers,
+        max_length=args.max_length
+    )
+    
+    # Load raw data
+    print(f"Loading dataset from {args.data_dir}")
+    with open('./data/prepared/train.json', 'r') as f:
+        train_data = json.load(f)
+    with open('./data/prepared/val.json', 'r') as f:
+        val_data = json.load(f)
+    
+    # Create datasets with raw data
+    train_dataset = SafetyDataset(train_data, tokenizer, model_config)
+    val_dataset = SafetyDataset(val_data, tokenizer, model_config)
+    
+    print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
+    
+    # Initialize model
+    model = SafetyJudge(model_config)
+    
     # Create trainer
     trainer = SafetyJudgeTrainer(
         model=model,
         tokenizer=tokenizer,
-        train_data=train_dataset,
-        val_data=val_dataset,
+        train_data=train_data,  # Pass raw data
+        val_data=val_data,      # Pass raw data
         config=config
     )
     

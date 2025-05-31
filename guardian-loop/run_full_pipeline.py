@@ -111,7 +111,7 @@ def main():
     # Step 2: Training
     if not args.skip_training and not args.demo_only and not args.eval_only:
         cmd = ("python guardian-loop/src/train_safety_judge.py --batch_size 8 --gradient_accumulation_steps 4 "
-               "--learning_rate 2e-4 --num_epochs 15 --freeze_layers 20 --pooling mean")
+               "--learning_rate 2e-4 --num_epochs 15 --freeze_layers 20")
         
         if args.visualize_training:
             cmd += " --visualize_during_training --visualization_interval 3"

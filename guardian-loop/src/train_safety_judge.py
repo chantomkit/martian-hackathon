@@ -149,11 +149,12 @@ class SafetyJudgeTrainer:
         
         # Print GPU memory usage at start of epoch
         if torch.cuda.is_available():
+            torch.cuda.empty_cache()  # Clear cache at start of epoch
             print(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
         
         progress_bar = tqdm(self.train_loader, desc="Training")
         
-        for batch in progress_bar:
+        for batch_idx, batch in enumerate(progress_bar):
             # Forward pass with automatic mixed precision
             with torch.amp.autocast(device_type='cuda', enabled=self.use_amp):
                 outputs = self.model(batch['input_ids'], batch['attention_mask'])
@@ -161,7 +162,7 @@ class SafetyJudgeTrainer:
                 loss = self.criterion(logits, batch['labels'])
             
             # Backward pass with gradient scaling
-            self.optimizer.zero_grad()
+            self.optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
             self.scaler.scale(loss).backward()
             self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(self.model.probe_head.parameters(), 1.0)
@@ -182,6 +183,11 @@ class SafetyJudgeTrainer:
                 progress_bar.set_postfix({'loss': loss.item(), 'mem': mem_info})
             else:
                 progress_bar.set_postfix({'loss': loss.item()})
+            
+            # Explicitly clear some memory every few batches
+            if batch_idx % 10 == 0:
+                del outputs, logits, loss
+                torch.cuda.empty_cache()
         
         # Calculate metrics
         metrics = self._calculate_metrics(all_labels, all_preds)
@@ -199,21 +205,26 @@ class SafetyJudgeTrainer:
         
         with torch.no_grad():
             for batch in tqdm(self.val_loader, desc="Validation"):
-                # Forward pass
-                outputs = self.model(batch['input_ids'], batch['attention_mask'])
-                logits = outputs['logits'] if isinstance(outputs, dict) else outputs
+                # Forward pass with automatic mixed precision
+                with torch.amp.autocast(device_type='cuda', enabled=self.use_amp):
+                    outputs = self.model(batch['input_ids'], batch['attention_mask'])
+                    logits = outputs['logits'] if isinstance(outputs, dict) else outputs
+                    
+                    # Calculate loss
+                    loss = self.criterion(logits, batch['labels'])
+                    total_loss += loss.item()
+                    
+                    # Get predictions and probabilities
+                    probs = torch.softmax(logits, dim=1)
+                    preds = torch.argmax(logits, dim=1)
                 
-                # Calculate loss
-                loss = self.criterion(logits, batch['labels'])
-                total_loss += loss.item()
-                
-                # Get predictions and probabilities
-                probs = torch.softmax(logits, dim=1)
-                preds = torch.argmax(logits, dim=1)
-                
+                # Move results to CPU and convert to numpy
                 all_preds.extend(preds.cpu().numpy())
                 all_probs.extend(probs[:, 1].cpu().numpy())  # Probability of unsafe
                 all_labels.extend(batch['labels'].cpu().numpy())
+                
+                # Clear memory
+                del outputs, logits, probs, preds
         
         # Calculate metrics
         metrics = self._calculate_metrics(all_labels, all_preds, all_probs)
@@ -338,11 +349,11 @@ def main():
     parser = argparse.ArgumentParser(description='Train the Safety Judge model')
     parser.add_argument('--data_dir', type=str, default='./data/prepared',
                        help='Path to prepared dataset directory')
-    parser.add_argument('--base_model', type=str, default='meta-llama/Llama-3.1-8B',
+    parser.add_argument('--base_model', type=str, default='meta-llama/Llama-3.1-8B-Instruct',
                        help='Name of the pretrained model to use')
     parser.add_argument('--output_dir', type=str, default='./models',
                        help='Directory to save the trained model')
-    parser.add_argument('--batch_size', type=int, default=32,
+    parser.add_argument('--batch_size', type=int, default=4,
                        help='Training batch size')
     parser.add_argument('--num_epochs', type=int, default=3,
                        help='Number of training epochs')
@@ -350,15 +361,15 @@ def main():
                        help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=0.01,
                        help='Weight decay')
-    parser.add_argument('--max_length', type=int, default=512,
+    parser.add_argument('--max_length', type=int, default=256,
                        help='Maximum sequence length')
     parser.add_argument('--use_wandb', action='store_true',
                        help='Whether to use Weights & Biases for logging')
+    parser.add_argument('--gradient_checkpointing', action='store_true', default=True,
+                       help='Enable gradient checkpointing to save memory')
     
     args = parser.parse_args()
     
-
-
     # Load the data
     train_data = load_json_data(Path(args.data_dir) / 'train.json')
     val_data = load_json_data(Path(args.data_dir) / 'val.json')
@@ -376,6 +387,19 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
+    
+    # Enable memory optimizations
+    if args.gradient_checkpointing and hasattr(model.base_model, 'gradient_checkpointing_enable'):
+        model.base_model.gradient_checkpointing_enable()
+        model.base_model.enable_input_require_grads()
+    
+    # Use memory efficient attention if available
+    if hasattr(model.base_model.config, 'use_memory_efficient_attention'):
+        model.base_model.config.use_memory_efficient_attention = True
+    
+    # Configure model to use flash attention if available
+    if hasattr(model.base_model.config, 'attn_implementation'):
+        model.base_model.config.attn_implementation = "flash_attention_2"
     
     # Create trainer
     trainer_config = {

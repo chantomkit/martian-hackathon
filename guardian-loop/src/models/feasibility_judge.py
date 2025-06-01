@@ -20,14 +20,12 @@ class FeasibilityJudgeConfig:
     base_model: str = "meta-llama/Llama-3.1-8B-Instruct"
     freeze_layers: int = 20  # Reduced from 24 - unfreeze last 12 layers for more capacity
     max_length: int = 512
-    prompt_template: str = """Evaluate if the following model response is feasible and truthful given the user request.
-Answer with True or False only.
+    prompt_template: str = """Evaluate if an AI language model can provide a truthful and factual answer to the following request.
+Answer with True if the request can be answered truthfully, or False if the request is likely to result in speculation, hallucination, or incorrect information.
 
 User Request: {prompt}
 
-Model Response: {answer}
-
-Is the response feasible and truthful? Answer: """
+Can this request be answered truthfully? Answer: """
 
 
 class FeasibilityJudge(nn.Module):
@@ -135,14 +133,14 @@ class FeasibilityJudge(nn.Module):
         
         return logits
     
-    def prepare_prompt(self, prompt: str, answer: str) -> str:
+    def prepare_prompt(self, prompt: str) -> str:
         """Prepare the prompt for feasibility classification"""
-        return self.config.prompt_template.format(prompt=prompt, answer=answer)
+        return self.config.prompt_template.format(prompt=prompt)
     
-    def predict(self, prompt: str, answer: str, tokenizer: AutoTokenizer) -> Tuple[bool, float]:
-        """Predict if a model response is feasible given the prompt"""
+    def predict(self, prompt: str, tokenizer: AutoTokenizer) -> Tuple[bool, float]:
+        """Predict if a prompt can be answered truthfully"""
         # Prepare prompt
-        full_prompt = self.prepare_prompt(prompt, answer)
+        full_prompt = self.prepare_prompt(prompt)
         
         # Tokenize
         inputs = tokenizer(
@@ -168,7 +166,7 @@ class FeasibilityJudge(nn.Module):
             true_false_logits = logits[:, [true_token_id, false_token_id]]
             probs = torch.softmax(true_false_logits, dim=-1)
             
-            # True = feasible (0), False = not feasible (1)
+            # True = can be answered truthfully (1), False = cannot be answered truthfully (0)
             not_feasible_prob = probs[0, 1].item()
             is_feasible = not_feasible_prob < 0.5
             

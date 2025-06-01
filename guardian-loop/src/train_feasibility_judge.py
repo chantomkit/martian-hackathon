@@ -2,6 +2,10 @@
 Training script for the Feasibility Judge using prompting
 """
 
+import os
+# Set memory management environment variables
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
@@ -58,11 +62,11 @@ class FeasibilityDataset(Dataset):
         item = self.data[idx]
         
         # Ensure we have the required fields
-        if 'prompt' not in item or 'answer' not in item or 'label' not in item:
-            raise ValueError(f"Data item at index {idx} missing required fields. Expected 'prompt', 'answer', and 'label', got: {item.keys()}")
+        if 'prompt' not in item or 'label' not in item:
+            raise ValueError(f"Data item at index {idx} missing required fields. Expected 'prompt' and 'label', got: {item.keys()}")
         
         # Format prompt with template
-        prompt = self.config.prompt_template.format(prompt=item['prompt'], answer=item['answer'])
+        prompt = self.config.prompt_template.format(prompt=item['prompt'])
         
         # Tokenize prompt
         inputs = self.tokenizer.encode(
@@ -79,6 +83,7 @@ class FeasibilityDataset(Dataset):
         attention_mask = [1] * len(inputs)
         
         # Create labels tensor - set True/False token as target
+        # label=1 means the prompt can be answered truthfully
         target_token = self.true_token_id if item['label'] == 1 else self.false_token_id
         labels = torch.full_like(torch.tensor(inputs), -100)
         labels[-1] = target_token
@@ -88,7 +93,7 @@ class FeasibilityDataset(Dataset):
             'attention_mask': torch.tensor(attention_mask),
             'labels': labels,
             'raw_label': item['label']
-        } 
+        }
 
 class FeasibilityJudgeTrainer:
     """Trainer for the Feasibility Judge model"""
@@ -232,6 +237,11 @@ class FeasibilityJudgeTrainer:
         # Gradient accumulation for effective larger batch size
         accumulation_steps = self.config.get('gradient_accumulation_steps', 1)
         
+        # Clear memory before starting epoch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+        
         progress_bar = tqdm(self.train_loader, desc="Training")
         
         for batch_idx, batch in enumerate(progress_bar):
@@ -261,7 +271,7 @@ class FeasibilityJudgeTrainer:
                 # Step optimizer and scaler
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
-                self.optimizer.zero_grad(set_to_none=True)
+                self.optimizer.zero_grad(set_to_none=True)  # More aggressive memory clearing
             
             self.scheduler.step()
             
@@ -278,14 +288,16 @@ class FeasibilityJudgeTrainer:
             
             # Update progress bar with GPU memory info
             if torch.cuda.is_available():
-                mem_info = f"GPU mem: {torch.cuda.memory_allocated() / 1024**2:.0f}MB"
+                mem_allocated = torch.cuda.memory_allocated() / 1024**2
+                mem_reserved = torch.cuda.memory_reserved() / 1024**2
+                mem_info = f"GPU alloc: {mem_allocated:.0f}MB, reserved: {mem_reserved:.0f}MB"
                 progress_bar.set_postfix({'loss': loss.item() * accumulation_steps, 'mem': mem_info})
             else:
                 progress_bar.set_postfix({'loss': loss.item() * accumulation_steps})
             
-            # Clear memory periodically
-            if batch_idx % 10 == 0:
-                del outputs, logits, loss
+            # Clear memory more aggressively
+            del outputs, logits, loss, true_false_logits, preds
+            if batch_idx % 5 == 0:  # More frequent clearing
                 torch.cuda.empty_cache()
         
         # Calculate metrics
@@ -488,9 +500,9 @@ def main():
                        help='Path to prepared dataset')
     parser.add_argument('--output_dir', type=str, default='./outputs/feasibility_checkpoints',
                        help='Output directory for checkpoints')
-    parser.add_argument('--batch_size', type=int, default=4,  # Reduced for generation
+    parser.add_argument('--batch_size', type=int, default=2,  # Reduced from 4
                        help='Training batch size')
-    parser.add_argument('--gradient_accumulation_steps', type=int, default=4,
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=8,  # Increased from 4
                        help='Gradient accumulation steps (effective batch = batch_size * this)')
     parser.add_argument('--learning_rate', type=float, default=2e-5,  # Lower for LLM finetuning
                        help='Learning rate')
@@ -553,6 +565,9 @@ def main():
     
     # Initialize model
     model = FeasibilityJudge(model_config)
+    
+    # Enable gradient checkpointing for memory efficiency
+    model.base_model.gradient_checkpointing_enable()
     
     # Create trainer
     trainer = FeasibilityJudgeTrainer(

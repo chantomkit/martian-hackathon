@@ -1,3 +1,3 @@
-from .rainbow_archive import SafetyRainbowArchive, ArchiveEntry
-from .rainbow_mutator import RainbowMutator
-from .rainbow_loop import RainbowAdversarialLoop 
+from .open_ended_archive import SafetyOpenEndedArchive, ArchiveEntry
+from .open_ended_mutator import OpenEndedMutator
+from .open_ended_loop import OpenEndedAdversarialLoop 

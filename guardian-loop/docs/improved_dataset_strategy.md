@@ -133,7 +133,7 @@ else:
 3. **Customization**: You can tune Guardian for your specific safety requirements
 4. **Transparency**: Unlike black-box APIs, Guardian provides interpretability
 
-## Running Without Rainbow Adversarial
+## Running Without Open-Ended Adversarial
 
 The pipeline is designed to work in stages:
 
@@ -146,7 +146,7 @@ python src/train_safety_judge.py
 python src/evaluate_safety.py
 
 # Stage 3: (Optional) Add adversarial training
-python src/adversarial/rainbow_loop.py
+python src/adversarial/open_ended_loop.py
 ```
 
 This allows you to:
@@ -162,7 +162,7 @@ This allows you to:
 | Data Quality | Mixed quality, not safety-focused | Purpose-built for safety |
 | Balance | Manual synthetic generation | Natural balance + smart mutations |
 | Real-world data | Limited | 150K+ real toxic conversations |
-| Adversarial | Only in Rainbow phase | Red team data from the start |
+| Adversarial | Only in Open-Ended phase | Red team data from the start |
 
 ## Expected Performance
 
@@ -196,5 +196,5 @@ With these specialized datasets:
 
 5. **(Later) Add adversarial training**:
    ```bash
-   python src/adversarial/rainbow_loop.py
+   python src/adversarial/open_ended_loop.py
    ``` 

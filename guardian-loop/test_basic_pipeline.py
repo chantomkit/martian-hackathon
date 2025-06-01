@@ -71,7 +71,7 @@ def test_basic_pipeline():
     print("   Training code: src/train_safety_judge.py")
     
     # Step 4: Evaluate without adversarial testing
-    print("\n4️⃣ Evaluation (without Rainbow adversarial)...")
+    print("\n4️⃣ Evaluation (without Open-Ended adversarial)...")
     print("   After training, you can evaluate with:")
     print("   - Basic accuracy metrics")
     print("   - AUC-ROC scores")
@@ -83,7 +83,7 @@ def test_basic_pipeline():
     print("1. Set MARTIAN_API_KEY in .env for real API integration")
     print("2. Run training: python src/train_safety_judge.py")
     print("3. Evaluate: python src/evaluate_safety.py")
-    print("4. When ready, add Rainbow adversarial: python src/adversarial/rainbow_loop.py")
+    print("4. When ready, add Open-Ended adversarial: python src/adversarial/open_ended_loop.py")
 
 
 if __name__ == "__main__":

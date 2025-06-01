@@ -20,12 +20,13 @@ from typing import Dict, List, Union, Any, Optional, cast, TypeVar
 import multiprocessing
 import plotly.graph_objects as go
 from torch.cuda.amp import autocast, GradScaler
+from models.safety_judge import SafetyJudge, SafetyJudgeConfig
+from mi_tools.visualization import SafetyJudgeMIVisualizer
+from mi_tools.advanced_analysis import AdvancedSafetyAnalyzer
 
 # Set multiprocessing start method to 'spawn'
 if __name__ == '__main__':
     multiprocessing.set_start_method('spawn', force=True)
-
-from models.safety_judge import SafetyJudge, SafetyJudgeConfig
 
 TokenizerType = TypeVar('TokenizerType', bound=PreTrainedTokenizer)
 
@@ -129,9 +130,13 @@ class SafetyJudgeTrainer:
         
         # Initialize MI visualizer if requested
         self.mi_visualizer = None
+        self.advanced_analyzer = None
         if config.get('visualize_during_training', False):
             from mi_tools.visualization import SafetyJudgeMIVisualizer
+            from mi_tools.advanced_analysis import AdvancedSafetyAnalyzer
+            
             self.mi_visualizer = SafetyJudgeMIVisualizer(model, tokenizer)
+            self.advanced_analyzer = AdvancedSafetyAnalyzer(model, tokenizer)
             self.visualization_dir = Path(config['output_dir']) / 'training_visualizations'
             self.visualization_dir.mkdir(parents=True, exist_ok=True)
             print(f"📊 MI visualizations will be saved to {self.visualization_dir}")
@@ -420,6 +425,27 @@ class SafetyJudgeTrainer:
             val_metrics = self.validate()
             print(f"Val metrics: {val_metrics}")
             
+            # Save epoch metrics for dashboard
+            epoch_metrics = {
+                'epoch': epoch + 1,
+                'train_accuracy': train_metrics['accuracy'],
+                'train_loss': train_metrics['loss'],
+                'train_f1': train_metrics['f1'],
+                'val_accuracy': val_metrics['accuracy'],
+                'val_loss': val_metrics['loss'],
+                'val_f1': val_metrics['f1'],
+                'f1': val_metrics['f1'],  # For backward compatibility
+                'accuracy': val_metrics['accuracy'],  # For backward compatibility
+                'loss': val_metrics['loss'],  # For backward compatibility
+                'auc': val_metrics.get('auc', 0)
+            }
+            
+            # Save metrics to file for dashboard
+            metrics_file = Path(self.config['output_dir']) / 'training_visualizations' / f'epoch_{epoch + 1}_metrics.json'
+            metrics_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(metrics_file, 'w') as f:
+                json.dump(epoch_metrics, f, indent=2)
+            
             # Create MI visualizations every N epochs or on first/last epoch
             visualization_interval = self.config.get('visualization_interval', 3)
             if (self.mi_visualizer and 
@@ -508,148 +534,84 @@ class SafetyJudgeTrainer:
         
         # Create visualizations for each sample
         for i, sample in enumerate(samples):
-            # Prepare input data
-            prompt = self.model.config.prompt_template.format(text=sample['prompt'])
-            
-            # Tokenize and get tensors
-            encoded = self.tokenizer(
-                prompt,
-                max_length=self.model.config.max_length,
-                truncation=True,
-                padding=False,
-                return_tensors='pt'
-            )
-            
-            # Move to device and ensure correct types
-            input_ids = encoded.input_ids.to(self.device)  # Shape: [1, seq_len]
-            attention_mask = encoded.attention_mask.to(self.device)  # Shape: [1, seq_len]
             label = "safe" if sample['label'] == 1 else "unsafe"
             
-            # Token attribution
-            token_fig, _ = self.mi_visualizer.create_token_attribution_heatmap(
-                text=prompt,  # Pass original text for visualization
-                tokens=self.tokenizer.convert_ids_to_tokens(input_ids[0]),  # Convert to tokens for display
-                attributions=self._compute_token_attributions(input_ids, attention_mask)
-            )
-            token_path = self.visualization_dir / f"epoch_{epoch}_sample_{i}_{label}_tokens.html"
-            token_fig.write_html(str(token_path))
-            
-            # Layer activations
-            layer_fig = self.mi_visualizer.visualize_layer_activations(
-                text=prompt,  # Pass original text for visualization
-                activations=self._compute_layer_activations(input_ids, attention_mask)
-            )
-            layer_path = self.visualization_dir / f"epoch_{epoch}_sample_{i}_{label}_layers.html"
-            layer_fig.write_html(str(layer_path))
+            try:
+                # Token attribution - pass the raw prompt text
+                token_fig, _ = self.mi_visualizer.create_token_attribution_heatmap(
+                    text=sample['prompt'],  # Pass the original prompt text
+                    return_data=True
+                )
+                token_path = self.visualization_dir / f"epoch_{epoch}_sample_{i}_{label}_tokens.html"
+                token_fig.write_html(str(token_path))
+                
+                # Layer activations - pass the raw prompt text
+                layer_fig = self.mi_visualizer.visualize_layer_activations(
+                    text=sample['prompt']  # Pass the original prompt text
+                )
+                layer_path = self.visualization_dir / f"epoch_{epoch}_sample_{i}_{label}_layers.html"
+                layer_fig.write_html(str(layer_path))
+            except Exception as e:
+                print(f"   ⚠️  Failed to create visualization for sample {i}: {str(e)}")
+                continue
         
         # Compare safe vs unsafe circuits if we have both
         if safe_samples and unsafe_samples:
-            # Prepare inputs for both samples
-            safe_prompt = self.model.config.prompt_template.format(text=safe_samples[0]['prompt'])
-            unsafe_prompt = self.model.config.prompt_template.format(text=unsafe_samples[0]['prompt'])
-            
-            # Tokenize safe prompt
-            safe_encoded = self.tokenizer(
-                safe_prompt,
-                max_length=self.model.config.max_length,
-                truncation=True,
-                padding=False,
-                return_tensors='pt'
-            )
-            
-            # Tokenize unsafe prompt
-            unsafe_encoded = self.tokenizer(
-                unsafe_prompt,
-                max_length=self.model.config.max_length,
-                truncation=True,
-                padding=False,
-                return_tensors='pt'
-            )
-            
-            # Move to device
-            safe_input_ids = safe_encoded.input_ids.to(self.device)  # Shape: [1, seq_len]
-            safe_attention_mask = safe_encoded.attention_mask.to(self.device)  # Shape: [1, seq_len]
-            unsafe_input_ids = unsafe_encoded.input_ids.to(self.device)  # Shape: [1, seq_len]
-            unsafe_attention_mask = unsafe_encoded.attention_mask.to(self.device)  # Shape: [1, seq_len]
-            
-            # Get circuit comparison
-            circuit_fig, circuit_data = self.mi_visualizer.compare_safe_unsafe_circuits(
-                safe_prompt=safe_prompt,  # Original text for visualization
-                unsafe_prompt=unsafe_prompt,  # Original text for visualization
-                safe_activations=self._compute_layer_activations(safe_input_ids, safe_attention_mask),
-                unsafe_activations=self._compute_layer_activations(unsafe_input_ids, unsafe_attention_mask)
-            )
-            circuit_path = self.visualization_dir / f"epoch_{epoch}_circuit_comparison.html"
-            circuit_fig.write_html(str(circuit_path))
-            
-            # Log the critical divergence layer
-            print(f"   Critical divergence at layer {circuit_data['critical_layer']}")
+            try:
+                # Use the actual prompts directly
+                safe_prompt = safe_samples[0]['prompt']
+                unsafe_prompt = unsafe_samples[0]['prompt']
+                
+                # Get circuit comparison
+                circuit_fig, circuit_data = self.mi_visualizer.compare_safe_unsafe_circuits(
+                    safe_prompt=safe_prompt,  # Pass text directly
+                    unsafe_prompt=unsafe_prompt  # Pass text directly
+                )
+                circuit_path = self.visualization_dir / f"epoch_{epoch}_circuit_comparison.html"
+                circuit_fig.write_html(str(circuit_path))
+                
+                # Log the critical divergence layer
+                print(f"   Critical divergence at layer {circuit_data['critical_layer']}")
+            except Exception as e:
+                print(f"   ⚠️  Failed to create circuit comparison: {str(e)}")
+        
+        # Advanced analysis - run on same schedule as regular visualizations when enabled
+        run_advanced = self.config.get('run_advanced_mi', False)
+        if self.advanced_analyzer and run_advanced:
+            try:
+                print("   🧠 Running advanced MI analysis (this may take a minute)...")
+                
+                # Get limited samples for neuron analysis - already limited in advanced_analysis.py
+                safe_prompts = [s['prompt'] for s in self.val_dataset.data if s['label'] == 1][:20]
+                unsafe_prompts = [s['prompt'] for s in self.val_dataset.data if s['label'] == 0][:20]
+                
+                # Identify safety neurons
+                safety_neurons = self.advanced_analyzer.identify_safety_neurons(safe_prompts, unsafe_prompts)
+                
+                # Trace circuits
+                safety_circuits = self.advanced_analyzer.trace_safety_circuits()
+                
+                # Create neuron map
+                neuron_map = self.advanced_analyzer.create_neuron_activation_map()
+                neuron_map.write_html(str(self.visualization_dir / f"epoch_{epoch}_neuron_map.html"))
+                
+                # Create circuit diagram  
+                if safety_circuits:
+                    circuit_diagram = self.advanced_analyzer.create_circuit_diagram()
+                    circuit_diagram.write_html(str(self.visualization_dir / f"epoch_{epoch}_circuits.html"))
+                
+                print(f"      Found {len(safety_neurons)} safety neurons, {len(safety_circuits)} circuits")
+                
+            except Exception as e:
+                print(f"   ⚠️  Advanced analysis failed: {str(e)}")
         
         # Create summary visualization showing metrics evolution
-        self._create_metrics_summary(epoch, val_metrics)
+        try:
+            self._create_metrics_summary(epoch, val_metrics)
+        except Exception as e:
+            print(f"   ⚠️  Failed to create metrics summary: {str(e)}")
         
         print(f"   ✅ Visualizations saved to {self.visualization_dir}")
-    
-    def _compute_token_attributions(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        """Helper to compute token attributions with proper shapes"""
-        # Create embedding representation that can have gradients
-        with torch.no_grad():
-            # Get embeddings from model
-            embeddings = self.model.base_model.model.embed_tokens(input_ids)
-        
-        # Enable gradients for embeddings
-        embeddings.requires_grad = True
-        
-        # Forward pass through base model with embeddings
-        outputs = self.model.base_model.model(
-            inputs_embeds=embeddings,
-            attention_mask=attention_mask,
-            return_dict=True,
-            output_attentions=True,
-            output_hidden_states=True
-        )
-        
-        # Get logits from last hidden state
-        logits = outputs.logits
-        
-        # Get attributions for the final prediction (True/False tokens)
-        true_false_logits = logits[:, -1, [self.val_dataset.true_token_id, self.val_dataset.false_token_id]]
-        pred_probs = torch.softmax(true_false_logits, dim=-1)
-        pred_score = pred_probs[:, 0]  # Probability of True/safe
-        
-        # Compute gradients
-        pred_score.backward()
-        
-        # Get attribution scores (gradient magnitude)
-        attributions = embeddings.grad.abs() if embeddings.grad is not None else torch.zeros_like(embeddings)
-        
-        # Average across embedding dimensions to get per-token scores
-        token_attributions = attributions.mean(dim=-1)
-        
-        # Clean up
-        embeddings.requires_grad = False
-        embeddings.grad = None
-        
-        return token_attributions[0]  # Return for single sequence
-    
-    def _compute_layer_activations(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> List[torch.Tensor]:
-        """Helper to compute layer activations with proper shapes"""
-        with torch.no_grad():
-            # Get all layer outputs
-            outputs = self.model.base_model.model(
-                input_ids=input_ids, 
-                attention_mask=attention_mask,
-                output_hidden_states=True,
-                return_dict=True
-            )
-            
-            # Get activations from each layer
-            hidden_states = outputs.hidden_states
-            
-            # Convert to list of tensors with shape [seq_len, hidden_dim]
-            activations = [state[0].detach() for state in hidden_states]
-            
-            return activations
     
     def _create_metrics_summary(self, epoch: int, val_metrics: Dict[str, float]):
         """Create a summary plot of training progress"""
@@ -737,6 +699,8 @@ def main():
                        help='Create MI visualizations during training')
     parser.add_argument('--visualization_interval', type=int, default=3,
                        help='Create visualizations every N epochs')
+    parser.add_argument('--run_advanced_mi', action='store_true',
+                       help='Run advanced MI analysis (slower but more detailed)')
     
     args = parser.parse_args()
     
@@ -752,7 +716,8 @@ def main():
         'output_dir': args.output_dir,
         'use_wandb': args.use_wandb,
         'visualize_during_training': args.visualize_during_training,
-        'visualization_interval': args.visualization_interval
+        'visualization_interval': args.visualization_interval,
+        'run_advanced_mi': args.run_advanced_mi
     }
     
     print(f"Effective batch size: {args.batch_size * args.gradient_accumulation_steps}")

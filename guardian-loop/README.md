@@ -8,7 +8,7 @@ Guardian-Loop is a dual-judge system featuring lightweight, mechanistically inte
 
 - **Lightweight Safety Judge**: Llama 3.1 8B with frozen layers and probe heads (~50MB additional parameters)
 - **Deep Mechanistic Interpretability**: Token attribution, attention analysis, and circuit visualization
-- **Rainbow Adversarial Loop**: Continuously discovers and patches vulnerabilities using MAP-Elites
+- **Open-Ended Adversarial Loop**: Continuously discovers and patches vulnerabilities using MAP-Elites
 - **Martian Integration**: Efficient pre-filtering for router systems with <10ms latency
 
 ## 🚀 Quick Start
@@ -63,7 +63,7 @@ guardian-loop/
 ├── src/
 │   ├── models/          # Safety judge architecture
 │   ├── mi_tools/        # Mechanistic interpretability
-│   ├── adversarial/     # Rainbow teaming implementation
+│   ├── adversarial/     # Open-Ended teaming implementation
 │   ├── martian/         # Martian API integration
 │   └── data/            # Dataset preparation
 ├── demo.py              # Interactive demonstration
@@ -95,9 +95,9 @@ We implement three key MI techniques:
 2. **Attention Analysis**: Identify which heads focus on safety patterns
 3. **Circuit Visualization**: Compare activation paths for safe vs unsafe prompts
 
-### 3. Rainbow Adversarial Loop
+### 3. Open-Ended Adversarial Loop
 
-Based on Rainbow Teaming methodology:
+Based on Open-Ended Teaming methodology:
 
 ```python
 # MAP-Elites archive with 2D grid
@@ -172,7 +172,7 @@ python -m src.data.prepare_safety_data
 ### Streamlit Interface
 1. **Safety Analysis**: Test any prompt with real-time MI visualization
 2. **MI Deep Dive**: Explore attention patterns and layer activations
-3. **Adversarial Testing**: Run mini Rainbow loops to find vulnerabilities
+3. **Adversarial Testing**: Run mini Open-Ended loops to find vulnerabilities
 4. **Martian Integration**: Test enhanced routing with cost tracking
 
 ### CLI Interface
@@ -192,7 +192,7 @@ python demo.py --mode martian
 
 ## 🏆 Key Innovations
 
-1. **Adversarial Self-Improvement**: First judge to use Rainbow Teaming for continuous improvement
+1. **Adversarial Self-Improvement**: First judge to use Open-Ended Teaming for continuous improvement
 2. **Deep MI Integration**: Not just accuracy metrics, but interpretable decision paths
 3. **Practical Efficiency**: 40%+ cost reduction with minimal latency
 4. **Martian-Ready**: Direct integration with sponsor's router ecosystem

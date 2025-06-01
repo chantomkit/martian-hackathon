@@ -1,0 +1,41 @@
+[theme]
+# Primary accent color for interactive elements
+primaryColor = "#1f77b4"
+
+# Background color for the main content area
+backgroundColor = "#ffffff"
+
+# Background color for the sidebar
+secondaryBackgroundColor = "#f0f2f6"
+
+# Color used for almost all text
+textColor = "#262730"
+
+# Font family for all text (can use "sans serif", "serif", or "monospace")
+font = "sans serif"
+
+# Base style for the app (either "light" or "dark")
+base = "light"
+
+[server]
+# Address to bind to
+address = "0.0.0.0"
+
+# Whether to send usage statistics to Streamlit
+gatherUsageStats = false
+
+# Port to run the server on
+port = 8501
+
+# Enable CORS protection
+enableCORS = false
+
+# Enable XSRF protection
+enableXsrfProtection = false
+
+[browser]
+# Whether to automatically open the browser
+serverAddress = "localhost"
+
+# Browser tab title
+gatherUsageStats = false 

@@ -935,19 +935,9 @@ def prepare_safety_data(base_dir: str = './data'):
     
     # Initialize the dataset preparer
     preparer = SafetyDatasetPreparer()
-    
-    # Use the existing prepare_dataset method but with our new output directory
-    datasets = preparer.prepare_dataset(
-        output_dir=str(output_dir),
-        train_split=0.8,  # 80% training
-        total_dataset_size=10,  # Total samples across all splits
-        balance_ratio=0.5,  # 50% safe, 50% unsafe
-        use_mutations=True  # Enable mutations for more diverse data
-    )
-    
-    print("\nDataset preparation complete!")
-    print(f"Files saved to: {output_dir}/")
-    return datasets
-
-if __name__ == '__main__':
-    prepare_safety_data()  # Will save to ./data/safety/ 
+    preparer.prepare_dataset(
+        total_dataset_size=500,  # Total samples across all splits, originally 10000, set to 10 for debugging
+        train_split=0.8,           # 80% for training (8000 samples)
+        balance_ratio=0.5,         # 50% safe, 50% unsafe
+        use_mutations=False        # Disabled for now
+    ) 

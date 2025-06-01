@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Run the complete Guardian-Loop pipeline (without Rainbow adversarial)
+Run the complete Guardian-Loop pipeline (without Open-Ended adversarial)
 Includes: data prep, training, evaluation, MI visualizations
 """
 
@@ -51,14 +51,16 @@ def main():
                        help='Skip data preparation if already done')
     parser.add_argument('--skip-training', action='store_true',
                        help='Skip training if model already exists')
-    parser.add_argument('--skip-rainbow', action='store_true',
-                       help='Skip Rainbow adversarial testing')
+    parser.add_argument('--skip-open-ended', action='store_true',
+                       help='Skip Open-Ended adversarial testing')
     parser.add_argument('--demo-only', action='store_true',
                        help='Only run the demo')
     parser.add_argument('--eval-only', action='store_true',
                        help='Only run evaluation')
     parser.add_argument('--visualize-training', action='store_true',
                        help='Create MI visualizations during training')
+    parser.add_argument('--run-advanced-mi', action='store_true',
+                       help='Run advanced MI analysis during training (slower but more detailed)')
     args = parser.parse_args()
     
     print("""
@@ -71,13 +73,16 @@ def main():
     4. MI visualizations
     5. Interactive demo
     
-    Note: Rainbow adversarial testing is skipped
+    Note: Open-Ended adversarial testing is skipped
     """)
     
-    if args.skip_rainbow:
-        print("    ⚠️  Rainbow adversarial testing: SKIPPED")
+    if args.skip_open_ended:
+        print("    ⚠️  Open-Ended adversarial testing: SKIPPED")
     else:
-        print("    6. Rainbow adversarial testing")
+        print("    6. Open-Ended adversarial testing")
+    
+    if args.run_advanced_mi:
+        print("    🧠 Advanced MI analysis: ENABLED (will be slower)")
     
     print("")
     
@@ -123,7 +128,10 @@ def main():
                "--learning_rate 2e-4 --num_epochs 15 --freeze_layers 20")
         
         if args.visualize_training:
-            cmd += " --visualize_during_training --visualization_interval 3"
+            cmd += " --visualize_during_training --visualization_interval 1"
+        
+        if args.run_advanced_mi:
+            cmd += " --run_advanced_mi"
             
         run_command(
             cmd,
@@ -132,6 +140,7 @@ def main():
         
         if args.visualize_training:
             print("\n📊 Training visualizations saved to: outputs/checkpoints/training_visualizations/")
+            print("   Visualizations are generated for EVERY epoch when --visualize-training is enabled!")
             print("   Open the HTML files to see how the model evolved during training!")
     
     # Step 3: Evaluation
@@ -195,20 +204,20 @@ def main():
                 "Running CLI demo"
             )
     
-    # Step 6: Rainbow Adversarial Testing (Optional)
-    if not args.skip_rainbow and not args.demo_only and not args.eval_only:
-        print("\n🌈 Rainbow Adversarial Testing")
+    # Step 6: Open-Ended Adversarial Testing (Optional)
+    if not args.skip_open_ended and not args.demo_only and not args.eval_only:
+        print("\n🌈 Open-Ended Adversarial Testing")
         print("   This will:")
         print("   - Generate adversarial prompts")
         print("   - Test model robustness")
         print("   - Create vulnerability report")
         
         run_command(
-            "python guardian-loop/src/adversarial/rainbow_loop.py --iterations 100 --output_dir outputs/rainbow",
-            "Running Rainbow adversarial testing"
+            "python guardian-loop/src/adversarial/open_ended_loop.py --iterations 100 --output_dir outputs/open_ended",
+            "Running Open-Ended adversarial testing"
         )
         
-        print("\n📁 Rainbow results saved to: outputs/rainbow/")
+        print("\n📁 Open-Ended results saved to: outputs/open_ended/")
     
     # Summary
     total_time = time.time() - start_time
@@ -224,8 +233,8 @@ def main():
     if args.visualize_training:
         print("   - Training MI evolution: outputs/checkpoints/training_visualizations/")
     
-    if not args.skip_rainbow:
-        print("   - Rainbow adversarial results: outputs/rainbow/")
+    if not args.skip_open_ended:
+        print("   - Open-Ended adversarial results: outputs/open_ended/")
     
     print("   - Demo available at: http://localhost:8501")
     
@@ -238,8 +247,8 @@ def main():
     
     print("   4. Test with your own prompts in the demo")
     
-    if args.skip_rainbow:
-        print("   5. When ready: add Rainbow adversarial with --skip-rainbow removed")
+    if args.skip_open_ended:
+        print("   5. When ready: add Open-Ended adversarial with --skip-open-ended removed")
 
 
 if __name__ == "__main__":

@@ -187,6 +187,67 @@ class SafetyJudge(nn.Module):
         model.load_state_dict(checkpoint['model_state_dict'])
         return model
 
+    def predict_with_logprobs(self, text: str, tokenizer: AutoTokenizer) -> Tuple[bool, float, Dict[str, float]]:
+        """
+        Predict if a prompt is safe using log probabilities.
+        Log probabilities are better calibrated than softmax probabilities.
+        
+        Returns:
+            - is_safe: boolean prediction
+            - confidence: calibrated confidence score from log probs
+            - log_probs: dict with 'true' and 'false' log probabilities
+        """
+        # Prepare prompt
+        prompt = self.prepare_prompt(text)
+        
+        # Tokenize
+        inputs = tokenizer(
+            prompt,
+            return_tensors="pt",
+            max_length=self.config.max_length,
+            truncation=True,
+            padding=True
+        ).to(self.base_model.device)
+        
+        # Get True/False token ids
+        true_tokens = tokenizer(" True", add_special_tokens=False)
+        false_tokens = tokenizer(" False", add_special_tokens=False)
+        true_token_id = true_tokens["input_ids"][0]
+        false_token_id = false_tokens["input_ids"][0]
+        
+        # Forward pass
+        with torch.no_grad():
+            outputs = self.forward(**inputs)
+            logits = outputs['logits'] if isinstance(outputs, dict) else outputs
+            
+            # Get log probabilities for True/False tokens
+            # Using log_softmax for numerical stability
+            log_probs = torch.log_softmax(logits[:, -1, :], dim=-1)
+            
+            true_log_prob = log_probs[0, true_token_id].item()
+            false_log_prob = log_probs[0, false_token_id].item()
+            
+            # Convert to probabilities for decision
+            # P(True) = exp(log_P(True)) / (exp(log_P(True)) + exp(log_P(False)))
+            # Using log-sum-exp trick for numerical stability
+            max_log_prob = max(true_log_prob, false_log_prob)
+            true_prob = torch.exp(torch.tensor(true_log_prob - max_log_prob))
+            false_prob = torch.exp(torch.tensor(false_log_prob - max_log_prob))
+            safe_probability = (true_prob / (true_prob + false_prob)).item()
+            
+            # True = safe, False = unsafe
+            is_safe = safe_probability > 0.5
+            
+            # Confidence is how far from 0.5 we are
+            confidence = abs(safe_probability - 0.5) * 2
+            
+        return is_safe, confidence, {
+            'true_log_prob': true_log_prob,
+            'false_log_prob': false_log_prob,
+            'safe_probability': safe_probability,
+            'log_prob_difference': true_log_prob - false_log_prob
+        }
+
 
 def create_safety_judge(config: Optional[SafetyJudgeConfig] = None) -> SafetyJudge:
     """Factory function to create a safety judge"""

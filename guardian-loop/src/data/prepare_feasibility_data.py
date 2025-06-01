@@ -173,7 +173,7 @@ async def process_dataframe(df: pd.DataFrame, client: openai.OpenAI):
 def prepare_feasibility_data(
     output_dir: str = "./data/feasibility",
     train_split: float = 0.8,
-    total_dataset_size: int = 10
+    total_dataset_size: int = 1000
 ) -> None:
     """Main function to prepare feasibility datasets"""
     # Create output directory structure

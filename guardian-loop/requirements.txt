@@ -15,7 +15,7 @@ circuitsvis>=1.43.0
 martian
 requests>=2.31.0
 
-# Adversarial & Rainbow Teaming
+# Adversarial & Open-Ended Teaming
 nltk>=3.8.0
 sentencepiece>=0.1.99
 

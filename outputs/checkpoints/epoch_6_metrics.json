@@ -1,0 +1,10 @@
+{
+    "train_accuracy": 0.95,
+    "val_accuracy": 0.91,
+    "train_loss": 0.182,
+    "val_loss": 0.298,
+    "f1": 0.92,
+    "auc": 0.96,
+    "accuracy": 0.91,
+    "loss": 0.298
+} 

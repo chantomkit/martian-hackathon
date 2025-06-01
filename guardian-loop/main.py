@@ -17,7 +17,7 @@ sys.path.append(str(Path(__file__).parent))
 from src.data.prepare_safety_data import SafetyDatasetPreparer
 from src.models.safety_judge import SafetyJudgeConfig
 from src.train_safety_judge import main as train_main
-from src.adversarial.rainbow_loop import RainbowAdversarialLoop
+from src.adversarial.open_ended_loop import OpenEndedAdversarialLoop
 from src.martian.integration import MartianIntegration
 from transformers import AutoTokenizer
 
@@ -29,7 +29,7 @@ def setup_environment():
         "data/prepared",
         "outputs/checkpoints",
         "outputs/visualizations",
-        "outputs/rainbow",
+        "outputs/open_ended",
         "cache"
     ]
     
@@ -96,8 +96,8 @@ def train_judge(use_existing=False):
 
 
 def run_adversarial_testing(model_path):
-    """Run adversarial testing with Rainbow loop"""
-    print("\n🌈 Running adversarial testing...")
+    """Run adversarial testing with Open-Ended loop"""
+    print("\n🌈 Running Open-Ended adversarial loop...")
     
     # Load model
     checkpoint = torch.load(model_path, map_location='cpu')
@@ -115,15 +115,15 @@ def run_adversarial_testing(model_path):
     # Initialize Martian (mock for now)
     martian = MartianIntegration()
     
-    # Run Rainbow loop
-    rainbow_loop = RainbowAdversarialLoop(
+    # Run Open-Ended loop
+    open_ended_loop = OpenEndedAdversarialLoop(
         safety_judge=model,
         tokenizer=tokenizer,
         martian_client=martian.client,
-        output_dir="./outputs/rainbow"
+        output_dir="./outputs/open_ended"
     )
     
-    results = rainbow_loop.run(
+    results = open_ended_loop.run(
         n_iterations=100,  # Reduced for hackathon
         retrain_interval=50,
         visualize_interval=25
@@ -133,7 +133,7 @@ def run_adversarial_testing(model_path):
     print(json.dumps(results['summary'], indent=2))
     
     # Save results
-    results_path = Path("./outputs/rainbow/results.json")
+    results_path = Path("./outputs/open_ended/results.json")
     with open(results_path, 'w') as f:
         json.dump(results, f, indent=2)
     
@@ -153,7 +153,7 @@ def create_demo_package(model_path):
         ("demo.py", "demo.py"),
         ("requirements.txt", "requirements.txt"),
         (model_path, "model/best_model.pt"),
-        ("outputs/rainbow/final_archive.json", "data/rainbow_archive.json"),
+        ("outputs/open_ended/final_archive.json", "data/open_ended_archive.json"),
     ]
     
     for src, dst in files_to_copy:

@@ -1,61 +1,147 @@
-# Guardian-Loop Quick Start Guide
+# 🚀 Guardian-Loop Quickstart
 
-## 🚀 Running the Full Pipeline
+Get up and running with Guardian-Loop in 5 minutes!
 
-### Option 1: Run Everything (Recommended)
+## Prerequisites
+
 ```bash
-# Make sure you're in the guardian-loop directory
+# Python 3.10+
+python --version
+
+# CUDA-capable GPU (optional but recommended)
+nvidia-smi
+```
+
+## Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/your-username/guardian-loop.git
 cd guardian-loop
 
-# Set your Martian API key (optional but recommended)
-export MARTIAN_API_KEY='your-key-here'
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Run the complete pipeline
+# Install dependencies
+pip install -r requirements.txt
+
+# Set up environment variables
+cp .env.example .env
+# Edit .env and add your API keys:
+# - HF_TOKEN (required for LLaMA model access)
+# - MARTIAN_API_KEY (optional for Martian integration)
+```
+
+## Quick Test
+
+```bash
+# Test basic functionality
+python test_basic_pipeline.py
+```
+
+## Full Pipeline
+
+### Option 1: Complete Pipeline (Recommended)
+
+```bash
+# Run everything: data prep, training, evaluation, MI analysis
+python run_full_pipeline.py
+
+# With visualization during training (slower but insightful)
+python run_full_pipeline.py --visualize-training
+
+# Skip Open-Ended adversarial testing (faster)
+python run_full_pipeline.py --skip-open-ended
+```
+
+### Option 2: Step by Step
+
+```bash
+# 1. Prepare data
+python src/data/prepare_safety_data.py
+
+# 2. Train safety judge
+python src/train_safety_judge.py --num_epochs 3 --batch_size 4
+
+# 3. Evaluate model
+python src/evaluate_safety.py
+
+# 4. Generate MI visualizations
+python src/mi_tools/visualization.py
+
+# 5. (Optional) Run Open-Ended adversarial testing
+python src/adversarial/open_ended_loop.py --iterations 100
+```
+
+## Interactive Demo
+
+### Streamlit Dashboard (Recommended)
+```bash
+streamlit run mi_dashboard.py
+# Open http://localhost:8501
+```
+
+### Simple Demo
+```bash
+streamlit run demo.py
+# Or CLI mode: python demo.py --cli
+```
+
+## Training Dashboard
+
+For real-time training monitoring:
+```bash
+streamlit run mi_dashboard.py
+```
+
+Features:
+- Live training metrics
+- MI visualizations per epoch
+- Test individual prompts
+- Open-Ended adversarial testing interface
+
+## Key Files
+
+- `mi_dashboard.py` - Main training & visualization dashboard
+- `src/train_safety_judge.py` - Model training script  
+- `src/evaluate_safety.py` - Evaluation metrics
+- `src/mi_tools/visualization.py` - MI analysis tools
+- `src/adversarial/open_ended_loop.py` - Adversarial testing
+
+## Troubleshooting
+
+### Out of Memory
+```bash
+# Reduce batch size
+python src/train_safety_judge.py --batch_size 2 --gradient_accumulation_steps 8
+```
+
+### No GPU Available
+```bash
+# Force CPU usage (very slow)
+export CUDA_VISIBLE_DEVICES=""
 python run_full_pipeline.py
 ```
 
-This will:
-1. Prepare datasets (~5K samples → ~10K with mutations)
-2. Train the safety judge (3 epochs)
-3. Evaluate performance
-4. Generate MI visualizations
-5. Launch interactive demo
+### Missing API Keys
+- HF_TOKEN: Get from https://huggingface.co/settings/tokens
+- MARTIAN_API_KEY: Get from https://withmartian.com
 
-**Estimated time**: 15-20 minutes with GPU, 1-1.5 hours with CPU
+## Next Steps
 
-### Option 2: Run Steps Individually
+1. **Explore the Dashboard**: Run `streamlit run mi_dashboard.py` for the full experience
+2. **Read the Docs**: Check `docs/` for detailed explanations
+3. **Customize Training**: Modify hyperparameters in the dashboard
+4. **Run Open-Ended**: Test model robustness with adversarial attacks
 
-```bash
-# Step 1: Prepare data (5-10 min without API, 15-20 min with GPT-4o mutations)
-python src/data/prepare_safety_data.py
+## Support
 
-# Step 2: Train model (20-30 min GPU, 1-2 hours CPU)
-python src/train_safety_judge.py --epochs 3 --batch_size 16
+- Issues: https://github.com/your-username/guardian-loop/issues
+- Documentation: `docs/README.md`
+- Paper: `resources/guardian-loop-paper.pdf`
 
-# Step 3: Evaluate (5 min)
-python src/evaluate_safety.py
-
-# Step 4: Generate MI visualizations (5-10 min)
-python src/mi_tools/visualization.py --mode all
-
-# Step 5: Launch demo
-streamlit run demo.py
-# OR for CLI version:
-python demo.py --mode cli
-```
-
-### Option 3: Quick Testing
-
-```bash
-# If you've already prepared data and trained:
-python run_full_pipeline.py --skip-data-prep --skip-training
-
-# Just run the demo:
-python run_full_pipeline.py --demo-only
-
-# Just run evaluation:
-python run_full_pipeline.py --eval-only
-```
+Happy judging! 🛡️
 
 ## 📊 Dataset Details
 
@@ -167,12 +253,12 @@ python test_basic_pipeline.py
 - **MI visualizations**: `outputs/mi_visualizations/`
 - **Logs**: `logs/`
 
-## 🚨 Adding Rainbow Adversarial (Later)
+## 🚨 Adding Open-Ended Adversarial (Later)
 
 When you're ready to add adversarial training:
 ```bash
 # Run adversarial discovery
-python src/adversarial/rainbow_loop.py --iterations 100
+python src/adversarial/open_ended_loop.py --iterations 100
 
 # Retrain with discovered adversarial examples
 python src/train_safety_judge.py --include_adversarial

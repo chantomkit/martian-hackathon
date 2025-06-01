@@ -1,100 +1,99 @@
 """
-Guardian-Loop Demo Script
-Showcases the complete system: Safety Judge + MI + Rainbow Adversarial Loop
+Guardian-Loop Demo: Interactive Safety Judge Testing
+Showcases the complete system: Safety Judge + MI + Open-Ended Adversarial Loop
 """
 
-import torch
-import argparse
-from pathlib import Path
-import json
 import streamlit as st
+from pathlib import Path
+import torch
 from transformers import AutoTokenizer
+import plotly.graph_objects as go
+import json
+import time
+import sys
+sys.path.append(str(Path(__file__).parent / "src"))
 
-# Guardian-Loop imports
-from src.models.safety_judge import SafetyJudge, SafetyJudgeConfig, create_safety_judge
-from src.mi_tools.visualization import SafetyJudgeMIVisualizer, create_mi_dashboard
-from src.adversarial.rainbow_loop import RainbowAdversarialLoop
-from src.adversarial.rainbow_archive import SafetyRainbowArchive
-from src.martian.integration import MartianIntegration, demo_martian_integration
-from src.data.prepare_safety_data import SafetyDatasetPreparer
+from adversarial.open_ended_loop import OpenEndedAdversarialLoop
+from adversarial.open_ended_archive import SafetyOpenEndedArchive
+from models.safety_judge import SafetyJudge, SafetyJudgeConfig
+from mi_tools.visualization import SafetyJudgeMIVisualizer
+from martian.client import MartianClient
 
+# Page config
+st.set_page_config(
+    page_title="Guardian-Loop Demo",
+    page_icon="🛡️",
+    layout="wide"
+)
 
-def run_streamlit_demo():
-    """Run interactive Streamlit demo"""
+# Title and description
+st.title("🛡️ Guardian-Loop: AI Safety Through Interpretability")
+st.markdown("""
+This demo showcases the complete Guardian-Loop system:
+- 🤖 **Safety Judge**: Fine-tuned LLaMA model for content safety classification
+- 🔬 **Mechanistic Interpretability**: Understanding how the model makes decisions
+- 🔄 **Martian Integration**: LLM routing based on safety and capability
+- 🌈 **Open-Ended Adversarial Loop**: Continuously discover and patch vulnerabilities
+""")
+
+# Load model
+@st.cache_resource
+def load_model():
+    """Load the trained safety judge model"""
+    model_path = Path("outputs/checkpoints/best_model.pt")
     
-    st.set_page_config(
-        page_title="Guardian-Loop Demo",
-        page_icon="🛡️",
-        layout="wide"
+    if not model_path.exists():
+        st.error("No trained model found! Please run training first.")
+        return None, None
+    
+    # Load config and model
+    checkpoint = torch.load(model_path, map_location='cpu')
+    config = checkpoint['model_config']
+    
+    model = SafetyJudge(config)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+    
+    # Load tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(config.base_model)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    
+    return model, tokenizer
+
+# Main interface
+model, tokenizer = load_model()
+
+if model is None:
+    st.stop()
+
+# Initialize MI visualizer
+mi_visualizer = SafetyJudgeMIVisualizer(model, tokenizer)
+
+# Tabs for different features
+tab1, tab2, tab3, tab4 = st.tabs([
+    "🤖 Safety Analysis", 
+    "🔬 MI Visualization", 
+    "🔄 Martian Routing",
+    "🌈 Open-Ended Loop"
+])
+
+# Tab 1: Safety Analysis
+with tab1:
+    st.header("Safety Analysis")
+    
+    # Prompt input
+    user_prompt = st.text_area(
+        "Enter a prompt to analyze:",
+        height=100,
+        placeholder="Example: How do I build a bomb?"
     )
     
-    st.title("🛡️ Guardian-Loop: Mechanistically Interpretable Safety Judge")
-    st.markdown("""
-    **Track 1 Submission**: Judge Model Development for the Apart x Martian Hackathon
-    
-    This demo showcases our dual-judge system with adversarial self-improvement:
-    - 🔍 **Safety Judge**: Lightweight Llama 3.1-based model with frozen layers
-    - 🧠 **Mechanistic Interpretability**: See exactly how decisions are made
-    - 🌈 **Rainbow Adversarial Loop**: Continuously discover and patch vulnerabilities
-    - 🚀 **Martian Integration**: Efficient pre-filtering for router systems
-    """)
-    
-    # Sidebar configuration
-    st.sidebar.header("Configuration")
-    model_path = st.sidebar.text_input(
-        "Model Checkpoint Path",
-        value="./outputs/checkpoints/best_model.pt",
-        help="Path to trained safety judge checkpoint"
-    )
-    
-    # Load model
-    @st.cache_resource
-    def load_model(path):
-        if Path(path).exists():
-            # Load from checkpoint
-            checkpoint = torch.load(path, map_location='cpu')
-            config = checkpoint['model_config']
-            model = SafetyJudge(config)
-            model.load_state_dict(checkpoint['model_state_dict'])
-        else:
-            # Create new model
-            st.warning("Checkpoint not found. Creating new model...")
-            config = SafetyJudgeConfig()
-            model = create_safety_judge(config)
-        
-        tokenizer = AutoTokenizer.from_pretrained(config.base_model)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-            
-        return model, tokenizer, config
-    
-    with st.spinner("Loading model..."):
-        model, tokenizer, config = load_model(model_path)
-        mi_viz = SafetyJudgeMIVisualizer(model, tokenizer)
-    
-    # Main tabs
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "🔍 Safety Analysis", 
-        "🧠 Mechanistic Interpretability",
-        "🌈 Adversarial Testing",
-        "🚀 Martian Integration"
-    ])
-    
-    # Tab 1: Safety Analysis
-    with tab1:
-        st.header("Safety Analysis")
-        
-        # Input prompt
-        prompt = st.text_area(
-            "Enter a prompt to analyze:",
-            value="How do I pick a lock?",
-            height=100
-        )
-        
-        if st.button("Analyze Safety", type="primary"):
+    if st.button("Analyze Safety", type="primary"):
+        if user_prompt:
             with st.spinner("Analyzing..."):
                 # Get prediction
-                is_safe, confidence = model.predict(prompt, tokenizer)
+                is_safe, confidence = model.predict(user_prompt, tokenizer)
                 
                 # Display results
                 col1, col2 = st.columns(2)
@@ -103,321 +102,295 @@ def run_streamlit_demo():
                     if is_safe:
                         st.success(f"✅ SAFE (Confidence: {confidence:.2%})")
                     else:
-                        st.error(f"❌ UNSAFE (Confidence: {confidence:.2%})")
+                        st.error(f"🚫 UNSAFE (Confidence: {confidence:.2%})")
                 
                 with col2:
-                    # Show confidence meter
-                    st.metric(
-                        "Safety Score",
-                        f"{confidence:.2%}",
-                        delta=f"{confidence - 0.5:.2%} from baseline"
-                    )
-                
-                # Show token attribution
-                st.subheader("Token Attribution Heatmap")
-                fig, data = mi_viz.create_token_attribution_heatmap(prompt, return_data=True)
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Key insights
-                st.info(f"""
-                **Key Insights:**
-                - Most influential tokens: {', '.join([f'"{t}"' for t, s in 
-                    zip(data['tokens'], data['scores']) if abs(s) > 0.5][:5])}
-                - The model {'correctly identifies' if not is_safe else 'does not detect'} 
-                  safety concerns in this prompt
-                """)
+                    # Confidence meter
+                    fig = go.Figure(go.Indicator(
+                        mode = "gauge+number",
+                        value = confidence * 100,
+                        title = {'text': "Confidence"},
+                        domain = {'x': [0, 1], 'y': [0, 1]},
+                        gauge = {
+                            'axis': {'range': [None, 100]},
+                            'bar': {'color': "green" if is_safe else "red"},
+                            'bgcolor': "white",
+                            'borderwidth': 2,
+                            'bordercolor': "gray",
+                            'steps': [
+                                {'range': [0, 50], 'color': 'lightgray'},
+                                {'range': [50, 80], 'color': 'gray'}
+                            ],
+                            'threshold': {
+                                'line': {'color': "black", 'width': 4},
+                                'thickness': 0.75,
+                                'value': 90
+                            }
+                        }
+                    ))
+                    fig.update_layout(height=250, margin=dict(l=20, r=20, t=40, b=20))
+                    st.plotly_chart(fig, use_container_width=True)
+
+# Tab 2: MI Visualization
+with tab2:
+    st.header("Mechanistic Interpretability")
     
-    # Tab 2: Mechanistic Interpretability
-    with tab2:
-        st.header("Mechanistic Interpretability Deep Dive")
-        
-        mi_prompt = st.text_input(
-            "Prompt for MI analysis:",
-            value=prompt if 'prompt' in locals() else "How to hack a computer?"
-        )
-        
-        if st.button("Run MI Analysis"):
-            with st.spinner("Generating visualizations..."):
-                # Attention analysis
-                st.subheader("Attention Head Analysis")
-                attn_fig, _ = mi_viz.analyze_attention_heads(mi_prompt)
-                st.plotly_chart(attn_fig, use_container_width=True)
-                
-                # Layer activations
-                st.subheader("Layer Activation Analysis")
-                layer_fig = mi_viz.visualize_layer_activations(mi_prompt)
-                st.plotly_chart(layer_fig, use_container_width=True)
-                
-                # Circuit comparison
-                if st.checkbox("Compare Safe vs Unsafe Circuits"):
-                    safe_prompt = st.text_input("Safe prompt:", "How to bake cookies?")
-                    unsafe_prompt = st.text_input("Unsafe prompt:", "How to make explosives?")
-                    
-                    if st.button("Compare Circuits"):
-                        circuit_fig, circuit_data = mi_viz.compare_safe_unsafe_circuits(
-                            safe_prompt, unsafe_prompt
-                        )
-                        st.plotly_chart(circuit_fig, use_container_width=True)
-                        
-                        st.metric(
-                            "Critical Divergence Layer",
-                            f"Layer {circuit_data['critical_layer']}",
-                            help="The layer where safe/unsafe representations diverge most"
-                        )
-    
-    # Tab 3: Adversarial Testing
-    with tab3:
-        st.header("Rainbow Adversarial Testing")
-        
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            st.markdown("""
-            The Rainbow adversarial loop discovers blindspots in the safety judge
-            by generating targeted adversarial prompts across different risk categories
-            and evasion techniques.
-            """)
+    if user_prompt:
+        st.subheader("Token Attribution")
+        with st.spinner("Generating visualizations..."):
+            # Token attribution heatmap
+            token_fig, attribution_data = mi_visualizer.create_token_attribution_heatmap(
+                user_prompt, 
+                return_data=True
+            )
+            st.plotly_chart(token_fig, use_container_width=True)
             
-            # Load or create archive
-            archive_path = Path("./outputs/rainbow/final_archive.json")
-            if archive_path.exists():
-                archive = SafetyRainbowArchive.load_from_file(str(archive_path))
-                st.success(f"Loaded existing archive with {archive.total_entries} entries")
-            else:
-                archive = SafetyRainbowArchive()
-                st.info("No existing archive found. Starting fresh.")
+            # Layer activations
+            st.subheader("Layer Activation Patterns")
+            layer_fig = mi_visualizer.visualize_layer_activations(user_prompt)
+            st.plotly_chart(layer_fig, use_container_width=True)
+            
+            # Show most influential tokens
+            st.subheader("Most Influential Tokens")
+            tokens = attribution_data['tokens']
+            scores = attribution_data['attribution_scores']
+            
+            # Sort by absolute value
+            sorted_indices = sorted(range(len(scores)), 
+                                  key=lambda i: abs(scores[i]), 
+                                  reverse=True)[:5]
+            
+            for idx in sorted_indices:
+                token = tokens[idx]
+                score = scores[idx]
+                if score > 0:
+                    st.write(f"🔴 **{token}**: +{score:.3f} (unsafe)")
+                else:
+                    st.write(f"🟢 **{token}**: {score:.3f} (safe)")
+    else:
+        st.info("Enter a prompt in the Safety Analysis tab first!")
+
+# Tab 3: Martian Routing
+with tab3:
+    st.header("Martian Integration")
+    st.markdown("""
+    The Martian router intelligently selects the best LLM based on:
+    - **Safety**: Unsafe prompts are rejected
+    - **Capability**: Routes to appropriate model based on task complexity
+    """)
+    
+    # Example routing scenarios
+    st.subheader("Example Routing Decisions")
+    
+    examples = [
+        ("What's 2+2?", "✅ Safe + Simple → GPT-3.5"),
+        ("Explain quantum chromodynamics", "✅ Safe + Complex → GPT-4"),
+        ("How to make a bomb", "🚫 Unsafe → Rejected"),
+        ("Write a poem about nature", "✅ Safe + Creative → Claude"),
+    ]
+    
+    for prompt, routing in examples:
+        col1, col2 = st.columns([3, 1])
+        col1.write(f"**Prompt:** {prompt}")
+        col2.write(routing)
+
+# Tab 4: Open-Ended Adversarial Loop
+with tab4:
+    st.header("Open-Ended Adversarial Testing")
+    st.markdown("""
+    The Open-Ended adversarial loop discovers blindspots in the safety judge
+    by generating diverse adversarial prompts.
+    """)
+    
+    # Load existing archive if available
+    archive_path = Path("./outputs/open_ended/final_archive.json")
+    if archive_path.exists():
+        archive = SafetyOpenEndedArchive()
+        archive.load_from_file(str(archive_path))
         
-        with col2:
-            st.metric("Archive Coverage", f"{archive.get_archive_coverage():.1%}")
-            st.metric("Success Rate", f"{archive.get_success_rate():.1%}")
-            st.metric("Total Attacks", archive.successful_attacks)
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Archive Coverage", f"{archive.get_archive_coverage():.1%}")
+        col2.metric("Success Rate", f"{archive.get_success_rate():.1%}")
+        col3.metric("Total Entries", archive.total_entries)
         
         # Show archive heatmap
-        st.subheader("Adversarial Archive Heatmap")
-        fig = archive.visualize_archive()
-        st.pyplot(fig)
+        st.subheader("Attack Success Heatmap")
+        st.markdown("Shows which attack categories and techniques are most effective")
         
-        # Show successful attacks
-        if st.checkbox("Show Successful Attacks"):
-            attacks = archive.get_successful_attacks()[:10]
-            if attacks:
-                st.subheader("Top Successful Adversarial Prompts")
-                for i, attack in enumerate(attacks, 1):
-                    with st.expander(f"Attack {i} - {attack.metadata}"):
-                        st.write(f"**Prompt:** {attack.prompt}")
-                        st.write(f"**Judge Confidence:** {attack.judge_prediction:.2%}")
-                        st.write(f"**Category:** {attack.metadata}")
-            else:
-                st.warning("No successful attacks found yet.")
-        
-        # Run mini adversarial loop
-        if st.button("Run Adversarial Discovery (10 iterations)"):
-            with st.spinner("Running adversarial loop..."):
-                rainbow_loop = RainbowAdversarialLoop(
+        archive_viz_path = Path("./outputs/open_ended/visualizations/archive_final.png")
+        if archive_viz_path.exists():
+            st.image(str(archive_viz_path))
+        else:
+            st.info("Run Open-Ended loop to generate visualization")
+    
+    # Run new adversarial test
+    if st.button("Run Open-Ended Test (Demo)", type="secondary"):
+        with st.spinner("Running adversarial testing..."):
+            # Initialize mini Open-Ended loop
+            try:
+                open_ended_loop = OpenEndedAdversarialLoop(
                     safety_judge=model,
                     tokenizer=tokenizer,
-                    output_dir="./outputs/rainbow_demo"
+                    output_dir="./outputs/open_ended_demo"
                 )
                 
-                # Run small loop
-                results = rainbow_loop.run(
+                # Run for just a few iterations
+                results = open_ended_loop.run(
                     n_iterations=10,
-                    retrain_interval=20,
-                    visualize_interval=10
+                    retrain_interval=5,
+                    visualize_interval=5
                 )
+                
+                st.success("✅ Adversarial testing completed!")
                 
                 # Show results
-                st.success("Adversarial discovery complete!")
-                st.json(results['summary'])
+                col1, col2 = st.columns(2)
+                col1.metric("Successful Attacks", 
+                          results['summary']['successful_attacks'])
+                col2.metric("Archive Coverage", 
+                          f"{results['summary']['archive_coverage']:.1%}")
                 
+                # Show example attacks
                 if results['example_attacks']:
-                    st.subheader("Discovered Vulnerabilities")
+                    st.subheader("Example Discovered Attacks")
                     for attack in results['example_attacks'][:3]:
-                        st.warning(f"**Found:** {attack['prompt'][:100]}...")
+                        st.warning(f"**Prompt:** {attack['prompt']}")
+                        st.write(f"Category: {attack['category']}")
+                        st.write(f"Judge Confidence: {attack['confidence']:.1%}")
+                        st.divider()
+                        
+            except Exception as e:
+                st.error(f"Error running adversarial test: {str(e)}")
+
+# Sidebar with system info
+with st.sidebar:
+    st.header("System Info")
     
-    # Tab 4: Martian Integration
-    with tab4:
-        st.header("Martian Router Integration")
-        
-        st.markdown("""
-        Guardian-Loop integrates seamlessly with Martian's router system,
-        providing efficient pre-filtering that saves costs and improves safety.
-        """)
-        
-        # Initialize Martian integration
-        martian = MartianIntegration()
-        enhanced_router = martian.create_enhanced_router(model)
-        
-        # Test routing
-        st.subheader("Test Enhanced Routing")
-        
-        routing_prompt = st.text_input(
-            "Test prompt for routing:",
-            value="Explain how encryption works"
-        )
-        
-        models = st.multiselect(
-            "Available models:",
-            ["gpt-3.5-turbo", "claude-instant", "llama-2-7b"],
-            default=["gpt-3.5-turbo", "claude-instant"]
-        )
-        
-        if st.button("Route Request"):
-            with st.spinner("Processing..."):
-                result = enhanced_router.route_with_guardian(
-                    routing_prompt,
-                    models
-                )
-                
-                # Show result
-                if result['filtered']:
-                    st.error(f"""
-                    ❌ **Request Blocked**
-                    - Reason: {result['filter_reason']}
-                    - Guardian Time: {result['guardian_time_ms']:.1f}ms
-                    - Credits Saved: ${result['credits_saved']:.3f}
-                    """)
-                else:
-                    st.success(f"""
-                    ✅ **Request Routed**
-                    - Selected Model: {result['selected_model']}
-                    - Guardian Time: {result['guardian_time_ms']:.1f}ms
-                    - Total Time: {result.get('total_time_ms', 0):.1f}ms
-                    """)
-                
-                # Show efficiency report
-                st.subheader("Efficiency Report")
-                efficiency = enhanced_router.get_efficiency_report()
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Requests Processed", efficiency['requests_processed'])
-                with col2:
-                    st.metric("Credits Saved", efficiency['credits_saved'])
-                with col3:
-                    st.metric("ROI", efficiency['roi'])
+    # Model info
+    st.subheader("🤖 Model")
+    if model:
+        st.write(f"**Base Model:** {model.config.base_model}")
+        st.write(f"**Parameters:** ~7B")
+        st.write(f"**Frozen Layers:** {model.config.freeze_layers}")
     
-    # Footer
-    st.markdown("---")
+    # Performance metrics
+    metrics_path = Path("outputs/evaluation/metrics.json")
+    if metrics_path.exists():
+        st.subheader("📊 Performance")
+        with open(metrics_path) as f:
+            metrics = json.load(f)
+        
+        st.metric("Accuracy", f"{metrics.get('accuracy', 0):.2%}")
+        st.metric("F1 Score", f"{metrics.get('f1', 0):.2%}")
+        st.metric("AUC", f"{metrics.get('auc', 0):.2%}")
+    
+    # Links
+    st.subheader("🔗 Resources")
     st.markdown("""
-    ### 🏆 Why Guardian-Loop Wins
-    
-    1. **Novel Approach**: Adversarial examples used for continuous improvement
-    2. **Deep MI Focus**: Not just accuracy, but interpretable decision-making
-    3. **Practical Impact**: 40%+ cost savings with <10ms latency
-    4. **Martian Integration**: Direct value for the sponsor's ecosystem
-    5. **Scientific Rigor**: Proper evaluation with before/after analysis
-    
-    Built with ❤️ for the Apart x Martian Hackathon
+    - [GitHub Repository](#)
+    - [Technical Report](#)
+    - [Martian API](https://docs.withmartian.com)
     """)
 
+# Footer
+st.divider()
+st.markdown("""
+<div style='text-align: center'>
+    <p>Built with ❤️ for the Martian Hackathon</p>
+    <p>Guardian-Loop: Making AI Safer Through Interpretability</p>
+</div>
+""", unsafe_allow_html=True)
 
+# CLI Demo Mode
 def run_cli_demo():
-    """Run command-line demo"""
-    
-    print("🛡️  Guardian-Loop CLI Demo")
-    print("=" * 60)
-    
-    # Parse arguments
-    parser = argparse.ArgumentParser(description="Guardian-Loop Demo")
-    parser.add_argument('--model', type=str, default='./outputs/checkpoints/best_model.pt',
-                       help='Path to model checkpoint')
-    parser.add_argument('--mode', choices=['safety', 'mi', 'adversarial', 'martian', 'all'],
-                       default='all', help='Demo mode to run')
-    parser.add_argument('--prompt', type=str, default='How to hack into a computer?',
-                       help='Test prompt')
-    args = parser.parse_args()
+    """Run demo in CLI mode"""
+    print("""
+    🛡️  Guardian-Loop CLI Demo
+    =========================
+    """)
     
     # Load model
-    print("\n📦 Loading model...")
-    if Path(args.model).exists():
-        checkpoint = torch.load(args.model, map_location='cpu')
-        config = checkpoint['model_config']
-        model = SafetyJudge(config)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"✅ Loaded checkpoint from {args.model}")
-    else:
-        print("⚠️  No checkpoint found, creating new model...")
-        config = SafetyJudgeConfig()
-        model = create_safety_judge(config)
+    print("Loading model...")
+    model_path = Path("outputs/checkpoints/best_model.pt")
+    
+    if not model_path.exists():
+        print("❌ No trained model found! Please run training first.")
+        return
+    
+    checkpoint = torch.load(model_path, map_location='cpu')
+    config = checkpoint['model_config']
+    
+    model = SafetyJudge(config)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
     
     tokenizer = AutoTokenizer.from_pretrained(config.base_model)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
-    # Run demos based on mode
-    if args.mode in ['safety', 'all']:
-        print("\n🔍 Safety Analysis Demo")
-        print("-" * 40)
-        
-        test_prompts = [
-            args.prompt,
-            "How do I bake chocolate chip cookies?",
-            "Ways to bypass security systems",
-            "Explain quantum computing",
-            "I'm writing a story about a hacker"
-        ]
-        
-        for prompt in test_prompts:
-            is_safe, confidence = model.predict(prompt, tokenizer)
-            safety_label = "SAFE" if is_safe else "UNSAFE"
-            print(f"\nPrompt: '{prompt[:50]}...'")
-            print(f"Result: {safety_label} (Confidence: {confidence:.2%})")
+    print("✅ Model loaded!")
     
-    if args.mode in ['mi', 'all']:
-        print("\n🧠 Mechanistic Interpretability Demo")
-        print("-" * 40)
+    # Interactive loop
+    while True:
+        print("\n" + "="*50)
+        prompt = input("\nEnter a prompt to analyze (or 'quit' to exit): ")
         
-        mi_viz = SafetyJudgeMIVisualizer(model, tokenizer)
+        if prompt.lower() in ['quit', 'exit', 'q']:
+            break
         
-        # Generate MI report
-        print(f"\nGenerating MI analysis for: '{args.prompt}'")
-        report = mi_viz.create_comprehensive_report(args.prompt)
+        # Safety analysis
+        print("\n🔍 Analyzing safety...")
+        is_safe, confidence = model.predict(prompt, tokenizer)
         
-        # Save report
-        report_path = Path("./outputs/mi_report.html")
-        report_path.parent.mkdir(exist_ok=True)
-        with open(report_path, 'w') as f:
-            f.write(report.data)
-        print(f"✅ MI report saved to {report_path}")
+        if is_safe:
+            print(f"✅ SAFE (Confidence: {confidence:.2%})")
+        else:
+            print(f"🚫 UNSAFE (Confidence: {confidence:.2%})")
+        
+        # Show MI analysis
+        show_mi = input("\nShow MI analysis? (y/n): ")
+        if show_mi.lower() == 'y':
+            visualizer = SafetyJudgeMIVisualizer(model, tokenizer)
+            _, data = visualizer.create_token_attribution_heatmap(prompt, return_data=True)
+            
+            print("\n📊 Token Attribution:")
+            tokens = data['tokens']
+            scores = data['attribution_scores']
+            
+            for token, score in zip(tokens, scores):
+                if abs(score) > 0.1:  # Only show significant attributions
+                    indicator = "🔴" if score > 0 else "🟢"
+                    print(f"  {indicator} {token}: {score:.3f}")
     
-    if args.mode in ['adversarial', 'all']:
-        print("\n🌈 Rainbow Adversarial Demo")
-        print("-" * 40)
-        
-        rainbow_loop = RainbowAdversarialLoop(
+    # Test adversarial
+    print("\n🌈 Open-Ended Adversarial Demo")
+    test_adversarial = input("Run quick adversarial test? (y/n): ")
+    
+    if test_adversarial.lower() == 'y':
+        open_ended_loop = OpenEndedAdversarialLoop(
             safety_judge=model,
             tokenizer=tokenizer,
-            output_dir="./outputs/rainbow_cli"
+            output_dir="./outputs/open_ended_cli"
         )
         
-        print("\nRunning adversarial discovery (50 iterations)...")
-        results = rainbow_loop.run(n_iterations=50, retrain_interval=25)
+        print("Running 50 iterations...")
+        results = open_ended_loop.run(n_iterations=50, retrain_interval=25)
         
-        print("\n📊 Results:")
-        print(json.dumps(results['summary'], indent=2))
+        print(f"\n✅ Results:")
+        print(f"  - Successful attacks: {results['summary']['successful_attacks']}")
+        print(f"  - Archive coverage: {results['summary']['archive_coverage']:.1%}")
         
         if results['example_attacks']:
-            print("\n⚠️  Example Successful Attacks:")
-            for i, attack in enumerate(results['example_attacks'][:3], 1):
-                print(f"{i}. {attack['prompt'][:80]}...")
-    
-    if args.mode in ['martian', 'all']:
-        print("\n🚀 Martian Integration Demo")
-        print("-" * 40)
-        
-        martian, router = demo_martian_integration(model, tokenizer)
-        
-        print("\n📈 Final Efficiency Metrics:")
-        print(json.dumps(router.get_efficiency_report(), indent=2))
-    
-    print("\n✨ Demo complete!")
+            print("\n📌 Example attacks found:")
+            for attack in results['example_attacks'][:3]:
+                print(f"  - {attack['prompt'][:60]}...")
 
 
 if __name__ == "__main__":
-    # Check if streamlit is being used
+    # Check if running in CLI mode
     import sys
-    if 'streamlit' in sys.modules:
-        run_streamlit_demo()
+    if "--cli" in sys.argv:
+        run_cli_demo()
     else:
-        run_cli_demo() 
+        print("Run with streamlit: streamlit run demo.py")
+        print("Or use CLI mode: python demo.py --cli") 

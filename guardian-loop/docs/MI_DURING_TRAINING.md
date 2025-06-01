@@ -1,107 +1,196 @@
-# Mechanistic Interpretability During Training
+# MI Visualizations During Training
 
-## Overview
+Enable mechanistic interpretability visualizations during model training to understand how the safety judge evolves.
 
-This feature allows you to visualize how your safety judge's internal mechanisms evolve during training. It's particularly useful for understanding:
+## Quick Start
 
-1. **When** the model learns to distinguish safe vs unsafe prompts
-2. **Which layers** become specialized for safety detection
-3. **How** the safe/unsafe circuits diverge over epochs
-
-## Usage
-
-### Option 1: Using the training script directly
 ```bash
-./train_optimized.sh --visualize
+# Enable visualizations during training
+python run_full_pipeline.py --visualize-training
+
+# With specific interval (default: every 3 epochs)
+python src/train_safety_judge.py --visualize_during_training --visualization_interval 1
+
+# With advanced MI analysis (slower but more detailed)
+python src/train_safety_judge.py --visualize_during_training --run_advanced_mi
 ```
 
-### Option 2: Using the full pipeline
+## Dashboard Usage
+
 ```bash
-python run_full_pipeline.py --visualize-training --skip-rainbow
+# Run the interactive dashboard
+streamlit run mi_dashboard.py
+
+# Then enable visualizations in the training config
 ```
 
-### Option 3: Training command with custom interval
+## Command Line Options
+
+### Basic Pipeline with Visualizations
+```bash
+python run_full_pipeline.py --visualize-training --skip-open-ended
+```
+
+### Standalone Training with MI
 ```bash
 python src/train_safety_judge.py \
-    --visualize_during_training \
-    --visualization_interval 2  # Create visualizations every 2 epochs
+  --num_epochs 15 \
+  --batch_size 8 \
+  --visualize_during_training \
+  --visualization_interval 1 \
+  --output_dir outputs/checkpoints
 ```
 
-## What Gets Created
+### Advanced MI Analysis
+```bash
+# Includes neuron identification and circuit tracing
+python src/train_safety_judge.py \
+  --visualize_during_training \
+  --run_advanced_mi \
+  --visualization_interval 5
+```
 
-During training, the following visualizations are generated:
+## Visualization Types
 
-### 1. **Token Attribution Heatmaps** (`epoch_N_sample_X_label_tokens.html`)
-- Shows which tokens the model focuses on
-- Compare how attention changes between early and late epochs
-- See if the model learns to identify safety-critical keywords
+### 1. Token Attribution Heatmaps
+- Shows which tokens influence safety classification
+- Generated for 2 safe and 2 unsafe validation samples
+- Saved as: `epoch_{N}_sample_{i}_{label}_tokens.html`
 
-### 2. **Layer Activation Patterns** (`epoch_N_sample_X_label_layers.html`)
-- Visualizes activation magnitudes across layers
-- Shows MLP vs Attention contributions
-- Identifies which layers become safety-specialized
+### 2. Layer Activation Patterns
+- Visualizes activation magnitudes across transformer layers
+- Shows frozen vs fine-tuned layer boundary
+- Saved as: `epoch_{N}_sample_{i}_{label}_layers.html`
 
-### 3. **Safe vs Unsafe Circuit Comparison** (`epoch_N_circuit_comparison.html`)
-- Compares neural circuits for safe and unsafe prompts
-- Shows embedding divergence and cosine similarity
-- Identifies the "critical layer" where safe/unsafe paths diverge
+### 3. Circuit Comparison
+- Compares information flow for safe vs unsafe prompts
+- Identifies critical divergence layers
+- Saved as: `epoch_{N}_circuit_comparison.html`
 
-### 4. **Training Progress** (`training_progress.html`)
-- Plots accuracy, F1, and loss over epochs
-- Updated after each visualization interval
-- Helps identify when the model converges
+### 4. Neuron Maps (Advanced MI)
+- Identifies safety-specialized neurons
+- Shows activation patterns across layers
+- Saved as: `epoch_{N}_neuron_map.html`
 
-## Interpreting the Visualizations
+### 5. Circuit Diagrams (Advanced MI)
+- Maps information flow through safety detection circuits
+- Shows connected neuron pathways
+- Saved as: `epoch_{N}_circuits.html`
 
-### Early Training (Epochs 1-3)
-- Token attributions are noisy and unfocused
-- Layer activations are similar for safe/unsafe
-- Circuit divergence is minimal
+### 6. Training Progress
+- Metrics evolution across epochs
+- Saved as: `training_progress.html`
 
-### Mid Training (Epochs 4-10) 
-- Token focus sharpens on safety-critical words
-- Specific layers (typically 22-26) show increased activation
-- Clear divergence emerges between safe/unsafe circuits
+## Output Structure
 
-### Late Training (Epochs 11-15)
-- Strong, consistent token attribution patterns
-- Specialized safety detection layers
-- Maximum circuit divergence stabilizes
-
-## Example Insights
-
-From our experiments, we typically observe:
-
-1. **Layer 23-24** become the "safety detection hub"
-2. **Attention heads** in layers 20-26 specialize for harmful patterns
-3. **Circuit divergence** peaks around layer 24-25
-4. The model learns general safety patterns before specific harmful categories
+```
+outputs/checkpoints/training_visualizations/
+├── epoch_1_sample_0_safe_tokens.html
+├── epoch_1_sample_0_safe_layers.html
+├── epoch_1_sample_1_safe_tokens.html
+├── epoch_1_sample_1_safe_layers.html
+├── epoch_1_sample_2_unsafe_tokens.html
+├── epoch_1_sample_2_unsafe_layers.html
+├── epoch_1_sample_3_unsafe_tokens.html
+├── epoch_1_sample_3_unsafe_layers.html
+├── epoch_1_circuit_comparison.html
+├── epoch_1_metrics.json
+├── epoch_1_neuron_map.html      # If advanced MI enabled
+├── epoch_1_circuits.html        # If advanced MI enabled
+└── training_progress.html
+```
 
 ## Performance Considerations
 
-- Visualizations add ~20-30 seconds per epoch
-- HTML files are ~200-500KB each
-- Total storage: ~50-100MB for a full training run
+### Time Overhead
+- Basic visualizations: +2-3 minutes per epoch
+- Advanced MI analysis: +5-10 minutes per epoch
 
-## Viewing the Results
+### Memory Usage
+- Basic: Minimal additional memory
+- Advanced MI: +2-4GB GPU memory for neuron analysis
 
-1. Navigate to the visualizations directory:
-   ```bash
-   cd outputs/checkpoints/training_visualizations/
-   ```
+### Recommended Settings
+```bash
+# For quick training with basic insights
+--visualize_during_training --visualization_interval 3
 
-2. Open any HTML file in your browser:
-   ```bash
-   open epoch_1_sample_0_safe_tokens.html  # macOS
-   # or
-   xdg-open epoch_1_sample_0_safe_tokens.html  # Linux
-   ```
+# For detailed analysis (fewer epochs)
+--visualize_during_training --run_advanced_mi --visualization_interval 1 --num_epochs 5
 
-3. Compare visualizations across epochs to see evolution
+# For production training with periodic checks
+--visualize_during_training --visualization_interval 10
+```
 
-## Tips
+## Interpreting Results
 
-- Use `--visualization_interval 1` for detailed analysis (every epoch)
-- Use `--visualization_interval 5` for faster training with key checkpoints
-- The circuit comparison is most informative in later epochs
-- Token attributions stabilize faster than layer patterns 
+### Token Attribution Evolution
+- Early epochs: Scattered attention, learning basic patterns
+- Mid training: Focus on key safety-related tokens
+- Late epochs: Refined, consistent attribution patterns
+
+### Layer Activation Changes
+- Watch for activation spikes after the frozen layer boundary
+- Increasing activation in later layers indicates safety-specific learning
+- Stable patterns suggest convergence
+
+### Circuit Comparison Insights
+- Divergence point moves earlier as training progresses
+- Larger divergence = better safety/unsafe discrimination
+- Critical layers stabilize after good training
+
+### Neuron Specialization (Advanced)
+- Safety neurons emerge in layers 20-26
+- Clusters indicate robust detection mechanisms
+- Sparse activations suggest overfitting
+
+## Troubleshooting
+
+### Visualizations Not Generated
+- Check output directory permissions
+- Ensure Plotly is installed: `pip install plotly`
+- Verify CUDA memory if using advanced MI
+
+### HTML Files Not Loading
+- Use a modern browser (Chrome/Firefox recommended)
+- Check for JavaScript errors in console
+- Try opening files directly in browser
+
+### Memory Errors with Advanced MI
+- Reduce batch size
+- Increase visualization interval
+- Disable advanced MI for some epochs
+
+## Integration with Dashboard
+
+The MI dashboard automatically loads and displays these visualizations:
+
+1. Run training with visualizations enabled
+2. Open dashboard: `streamlit run mi_dashboard.py`
+3. Navigate to "Training Visualizations" section
+4. Select epoch with slider
+5. View all visualizations in organized tabs
+
+## Best Practices
+
+1. **Start Simple**: Use basic visualizations first
+2. **Strategic Intervals**: Visualize more frequently early in training
+3. **Compare Epochs**: Look for evolution patterns
+4. **Focus on Changes**: Sudden shifts indicate learning milestones
+5. **Validate Insights**: Cross-reference with validation metrics
+
+## Example Workflow
+
+```bash
+# 1. Quick test with frequent visualizations
+python src/train_safety_judge.py --num_epochs 3 --visualize_during_training --visualization_interval 1
+
+# 2. Review in dashboard
+streamlit run mi_dashboard.py
+
+# 3. Full training with periodic checks
+python src/train_safety_judge.py --num_epochs 15 --visualize_during_training --visualization_interval 5
+
+# 4. Deep dive on interesting epochs
+python src/train_safety_judge.py --num_epochs 20 --visualize_during_training --run_advanced_mi --visualization_interval 10
+``` 

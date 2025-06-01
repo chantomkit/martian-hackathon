@@ -302,6 +302,10 @@ class SafetyJudgeTrainer:
         all_probs = []
         all_labels = []
         
+        # For logging examples
+        num_examples_to_log = 4
+        logged_examples = []
+        
         with torch.no_grad():
             for batch_idx, batch in enumerate(tqdm(self.val_loader, desc="Validation")):
                 # Forward pass
@@ -325,10 +329,50 @@ class SafetyJudgeTrainer:
                 all_probs.extend(probs[:, 0].cpu().numpy())  # Probability of True/safe
                 all_labels.extend(batch['raw_labels'].cpu().numpy())
                 
+                # Log a few examples from the first batch
+                if batch_idx == 0 and len(logged_examples) < num_examples_to_log:
+                    for i in range(min(len(batch['input_ids']), num_examples_to_log)):
+                        # Decode input text
+                        input_text = self.tokenizer.decode(batch['input_ids'][i], skip_special_tokens=True)
+                        
+                        # Get raw logits and probabilities
+                        true_logit = true_false_logits[i, 0].item()
+                        false_logit = true_false_logits[i, 1].item()
+                        true_prob = probs[i, 0].item()
+                        false_prob = probs[i, 1].item()
+                        
+                        # Get prediction and confidence
+                        pred = "SAFE" if preds[i].item() == 1 else "UNSAFE"
+                        conf = probs[i, 0].item() if pred == "SAFE" else 1 - probs[i, 0].item()
+                        true_label = "SAFE" if batch['raw_labels'][i].item() == 1 else "UNSAFE"
+                        
+                        logged_examples.append({
+                            'input': input_text,
+                            'prediction': pred,
+                            'confidence': conf,
+                            'true_label': true_label,
+                            'true_logit': true_logit,
+                            'false_logit': false_logit,
+                            'true_prob': true_prob,
+                            'false_prob': false_prob
+                        })
+                
                 # Clear memory periodically
                 if batch_idx % 10 == 0:
                     del outputs, logits, probs, preds, loss
                     torch.cuda.empty_cache()
+        
+        # Print example predictions
+        print("\n📝 Example Predictions:")
+        print("=" * 100)
+        for ex in logged_examples:
+            print(f"\nInput:\n{ex['input']}")
+            print(f"\nRaw Model Outputs:")
+            print(f"True token  - logit: {ex['true_logit']:6.2f}, probability: {ex['true_prob']:.2%}")
+            print(f"False token - logit: {ex['false_logit']:6.2f}, probability: {ex['false_prob']:.2%}")
+            print(f"\nFinal Prediction: {ex['prediction']} (confidence: {ex['confidence']:.2%})")
+            print(f"True Label: {ex['true_label']}")
+            print("=" * 100)
         
         # Calculate metrics
         metrics = self._calculate_metrics(all_labels, all_preds, all_probs)
@@ -449,7 +493,7 @@ class SafetyJudgeTrainer:
         metrics_path = path.parent / f"{path.stem}_metrics.json"
         with open(metrics_path, 'w') as f:
             json.dump(metrics, f, indent=2)
-    
+
     def create_mi_visualizations(self, epoch: int, val_metrics: Dict[str, float]):
         """Create MI visualizations for validation samples"""
         if self.mi_visualizer is None:

@@ -927,11 +927,27 @@ If you cannot create a genuinely safe version that meets all these criteria, res
             return []
 
 
-if __name__ == "__main__":
+def prepare_safety_data(base_dir: str = './data'):
+    """Main function to prepare safety datasets"""
+    # Create output directory structure
+    output_dir = Path(base_dir) / 'safety'
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Initialize the dataset preparer
     preparer = SafetyDatasetPreparer()
-    preparer.prepare_dataset(
-        total_dataset_size=10,  # Total samples across all splits, originally 10000, set to 10 for debugging
-        train_split=0.8,           # 80% for training (8000 samples)
-        balance_ratio=0.5,         # 50% safe, 50% unsafe
-        use_mutations=False        # Disabled for now
-    ) 
+    
+    # Use the existing prepare_dataset method but with our new output directory
+    datasets = preparer.prepare_dataset(
+        output_dir=str(output_dir),
+        train_split=0.8,  # 80% training
+        total_dataset_size=10,  # Total samples across all splits
+        balance_ratio=0.5,  # 50% safe, 50% unsafe
+        use_mutations=True  # Enable mutations for more diverse data
+    )
+    
+    print("\nDataset preparation complete!")
+    print(f"Files saved to: {output_dir}/")
+    return datasets
+
+if __name__ == '__main__':
+    prepare_safety_data()  # Will save to ./data/safety/ 

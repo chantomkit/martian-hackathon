@@ -95,18 +95,27 @@ def main():
     
     # Step 1: Data Preparation
     if not args.skip_data_prep and not args.demo_only and not args.eval_only:
+        # Prepare safety data
         run_command(
             "python guardian-loop/src/data/prepare_safety_data.py",
-            "Preparing datasets with safe mutations"
+            "Preparing safety datasets"
         )
-        # print("\n📊 Dataset Statistics:")
-        # print("   - WildGuard: 1,000 samples")
-        # print("   - BeaverTails: 1,000 samples")
-        # print("   - ToxicChat: 1,000 samples")
-        # print("   - WildChat toxic: 1,000 samples")
-        # print("   - Anthropic red team: 1,000 samples")
-        # print("   - Plus GPT-4o mutations of unsafe prompts")
-        # print("   - Expected total: ~10K balanced samples")
+        
+        # Prepare feasibility data
+        run_command(
+            "python guardian-loop/src/data/prepare_feasibility_data.py",
+            "Preparing feasibility datasets"
+        )
+        
+        print("\n📊 Dataset Statistics:")
+        print("Safety Dataset:")
+        print("   - Train: data/safety/train.json")
+        print("   - Val: data/safety/val.json")
+        print("   - Test: data/safety/test.json")
+        print("\nFeasibility Dataset:")
+        print("   - Train: data/feasibility/train.json")
+        print("   - Val: data/feasibility/val.json")
+        print("   - Test: data/feasibility/test.json")
     
     # Step 2: Training
     if not args.skip_training and not args.demo_only and not args.eval_only:

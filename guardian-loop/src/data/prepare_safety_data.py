@@ -510,7 +510,7 @@ If you cannot create a genuinely safe version that meets all these criteria, res
     
     def prepare_dataset(
         self, 
-        output_dir: str = "./data/prepared",
+        output_dir: str = "./data/safety",
         train_split: float = 0.8,
         total_dataset_size: int = 10000,
         balance_ratio: float = 0.5,

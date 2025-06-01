@@ -713,7 +713,7 @@ class SafetyJudgeTrainer:
 
 def main():
     parser = argparse.ArgumentParser(description="Train Safety Judge")
-    parser.add_argument('--data_dir', type=str, default='./data/prepared/safety_dataset',
+    parser.add_argument('--data_dir', type=str, default='./data/safety',
                        help='Path to prepared dataset')
     parser.add_argument('--output_dir', type=str, default='./outputs/checkpoints',
                        help='Output directory for checkpoints')
@@ -773,9 +773,9 @@ def main():
     
     # Load raw data
     print(f"Loading dataset from {args.data_dir}")
-    with open('./data/prepared/train.json', 'r') as f:
+    with open(Path(args.data_dir) / 'train.json', 'r') as f:
         train_data = json.load(f)
-    with open('./data/prepared/val.json', 'r') as f:
+    with open(Path(args.data_dir) / 'val.json', 'r') as f:
         val_data = json.load(f)
     
     # Create datasets with raw data

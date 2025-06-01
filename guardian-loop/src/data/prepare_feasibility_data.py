@@ -8,7 +8,7 @@ import os
 import json
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from datasets import load_dataset
+from datasets import load_dataset, Dataset, DatasetDict
 import pandas as pd
 from tqdm import tqdm
 import numpy as np
@@ -18,10 +18,10 @@ from dotenv import load_dotenv
 def load_truthfulqa_data() -> List[Dict[str, Any]]:
     """Load and process TruthfulQA dataset"""
     print("Loading TruthfulQA dataset...")
-    dataset = load_dataset("truthful_qa", "multiple_choice")
+    dataset = load_dataset("truthful_qa", "generation")
     
     processed_data = []
-    for item in tqdm(dataset['train']):
+    for item in tqdm(dataset['validation']):
         # Get correct and incorrect answers
         correct_answers = item.get('correct_answers', [])
         incorrect_answers = item.get('incorrect_answers', [])
@@ -53,30 +53,47 @@ def load_truthfulqa_data() -> List[Dict[str, Any]]:
     return processed_data
 
 def load_halueval_data() -> List[Dict[str, Any]]:
-    """Load and process alternative hallucination dataset"""
-    print("Loading alternative dataset for hallucination detection (vectara/hallucination_dataset)...")
-    dataset = load_dataset("vectara/hallucination_dataset", split="train")
+    """Load and process hallucination dataset"""
+    print("Loading HaluEval dataset...")
+    dataset: DatasetDict = load_dataset("pminervini/HaluEval", 'qa_samples')
     
     processed_data = []
-    for item in tqdm(dataset):
-        response = item.get('response', '')
-        hallucination = item.get('hallucination', True)  # Default to True if not specified
-        
-        if response:
-            processed_data.append({
-                'model_response': response,
-                'question': item.get('prompt', 'Hallucination check'),
-                'is_truthful': not hallucination,  # Invert hallucination flag
-                'source': 'hallucination_dataset',
-                'hallucination_type': item.get('type', 'unknown')
-            })
+    if isinstance(dataset, DatasetDict) and 'data' in dataset:
+        data: Dataset = dataset['data']
+        for item in tqdm(data):
+            # Access fields directly since Dataset provides dictionary-like access
+            knowledge = str(item['knowledge']) if 'knowledge' in item else ''
+            question = str(item['question']) if 'question' in item else ''
+            answer = str(item['answer']) if 'answer' in item else ''
+            hallucination = bool(item['hallucination']) if 'hallucination' in item else True
+            
+            if answer:
+                processed_data.append({
+                    'model_response': answer,
+                    'question': question,
+                    'is_truthful': not hallucination,  # Convert hallucination flag to truthfulness
+                    'source': 'halueval',
+                    'context': knowledge  # Store knowledge as context for reference
+                })
     
     return processed_data
 
-def prepare_feasibility_data(base_dir: str = './data'):
-    """Main function to prepare feasibility datasets"""
+def prepare_feasibility_data(
+    output_dir: str = "./data/feasibility",
+    train_split: float = 0.8,
+    total_dataset_size: int = 10000,
+    balance_ratio: float = 0.5
+) -> None:
+    """Main function to prepare feasibility datasets
+    
+    Args:
+        output_dir: Directory to save the prepared datasets
+        train_split: Fraction of data to use for training (remaining split between val/test)
+        total_dataset_size: Target total size of the dataset
+        balance_ratio: Target ratio of truthful to untruthful examples
+    """
     # Create output directory structure
-    output_dir = Path(base_dir) / 'feasibility'
+    output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Load HuggingFace token if available
@@ -104,33 +121,41 @@ def prepare_feasibility_data(base_dir: str = './data'):
     # Convert to DataFrame for easier processing
     df = pd.DataFrame(all_data)
     
-    # Basic statistics
-    print("\nDataset Statistics:")
+    # Basic statistics before balancing
+    print("\nInitial Dataset Statistics:")
     print(f"Total samples: {len(df)}")
     print(f"Truthful responses: {df['is_truthful'].sum()}")
     print(f"Non-truthful responses: {len(df) - df['is_truthful'].sum()}")
     print("\nSamples per source:")
     print(df['source'].value_counts())
     
-    # Balance dataset if needed
-    min_samples = min(
-        len(df[df['is_truthful']]),
-        len(df[~df['is_truthful']])
-    )
+    # Balance dataset according to balance_ratio
+    truthful = df[df['is_truthful']]
+    non_truthful = df[~df['is_truthful']]
     
-    truthful = df[df['is_truthful']].sample(min_samples, random_state=42)
-    non_truthful = df[~df['is_truthful']].sample(min_samples, random_state=42)
+    # Calculate target sizes based on total_dataset_size and balance_ratio
+    target_truthful = int(total_dataset_size * balance_ratio)
+    target_non_truthful = total_dataset_size - target_truthful
+    
+    # Sample or upsample to reach target sizes
+    if len(truthful) > target_truthful:
+        truthful = truthful.sample(target_truthful, random_state=42)
+    else:
+        truthful = truthful.sample(target_truthful, replace=True, random_state=42)
+        
+    if len(non_truthful) > target_non_truthful:
+        non_truthful = non_truthful.sample(target_non_truthful, random_state=42)
+    else:
+        non_truthful = non_truthful.sample(target_non_truthful, replace=True, random_state=42)
     
     balanced_df = pd.concat([truthful, non_truthful])
     balanced_df = balanced_df.sample(frac=1, random_state=42)  # Shuffle
     
     # Split into train/val/test
-    train_frac = 0.8
-    val_frac = 0.1
-    test_frac = 0.1
+    val_test_frac = (1 - train_split) / 2
     
-    train_size = int(len(balanced_df) * train_frac)
-    val_size = int(len(balanced_df) * val_frac)
+    train_size = int(len(balanced_df) * train_split)
+    val_size = int(len(balanced_df) * val_test_frac)
     
     train_df = balanced_df[:train_size]
     val_df = balanced_df[train_size:train_size + val_size]
@@ -139,11 +164,11 @@ def prepare_feasibility_data(base_dir: str = './data'):
     # Convert to final format
     def convert_to_final_format(row):
         return {
-            'text': row['model_response'],  # Model response is what we're evaluating
+            'prompt': row['question'],  # Store the original question/prompt
+            'answer': row['model_response'],  # Store the model's response
             'label': 1 if row['is_truthful'] else 0,  # 1 = truthful, 0 = not truthful
             'metadata': {
                 'source': row['source'],
-                'original_question': row['question'],
                 'dataset_specific': {
                     k: v for k, v in row.items() 
                     if k not in ['model_response', 'is_truthful', 'source', 'question']
@@ -165,11 +190,12 @@ def prepare_feasibility_data(base_dir: str = './data'):
         with open(output_file, 'w') as f:
             json.dump(data, f, indent=2)
     
-    print("\nSaved datasets:")
+    print("\nFinal Dataset Statistics:")
     print(f"Train: {len(train_data)} samples")
     print(f"Validation: {len(val_data)} samples")
     print(f"Test: {len(test_data)} samples")
     print(f"Files saved to: {output_dir}")
 
 if __name__ == '__main__':
-    prepare_feasibility_data()  # Will save to ./data/feasibility/ 
+    # Example usage with default parameters
+    prepare_feasibility_data() 

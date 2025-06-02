@@ -510,7 +510,7 @@ If you cannot create a genuinely safe version that meets all these criteria, res
     
     def prepare_dataset(
         self, 
-        output_dir: str = "./data/prepared",
+        output_dir: str = "./data/safety",
         train_split: float = 0.8,
         total_dataset_size: int = 10000,
         balance_ratio: float = 0.5,
@@ -927,7 +927,13 @@ If you cannot create a genuinely safe version that meets all these criteria, res
             return []
 
 
-if __name__ == "__main__":
+def prepare_safety_data(base_dir: str = './data'):
+    """Main function to prepare safety datasets"""
+    # Create output directory structure
+    output_dir = Path(base_dir) / 'safety'
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Initialize the dataset preparer
     preparer = SafetyDatasetPreparer()
     preparer.prepare_dataset(
         total_dataset_size=5000,  # Total samples across all splits, originally 10000, set to 10 for debugging

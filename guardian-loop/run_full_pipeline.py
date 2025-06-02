@@ -100,9 +100,10 @@ def main():
     
     # Step 1: Data Preparation
     if not args.skip_data_prep and not args.demo_only and not args.eval_only:
+        # Prepare safety data
         run_command(
             "python guardian-loop/src/data/prepare_safety_data.py",
-            "Preparing datasets with safe mutations"
+            "Preparing safety datasets"
         )
     
     # Step 2: Training

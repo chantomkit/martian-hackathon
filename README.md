@@ -39,12 +39,15 @@ The system uses multiple safety datasets that are automatically downloaded and p
 python src/data/prepare_safety_data.py
 ```
 
-This downloads and processes RealToxicityPrompts, ToxicChat, JailbreakBench, and Harmbench
+This creates a mixed dataset from RealToxicityPrompts, ToxicChat, JailbreakBench, and Harmbench
 
-Output files:
-- `data/prepared/train.json` - Training data
-- `data/prepared/val.json` - Validation data
-- `data/prepared/test.json` - Test data
+```bash
+python src/data/prepare_feasibility_data.py
+```
+
+This creates a mixed dataset from TruthfulQA and HaluEval
+
+Output files are `train.json`, `val.json`, `test.json` in `data` folder.
 
 Each sample has:
 ```json

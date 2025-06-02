@@ -381,7 +381,6 @@ class AdvancedSafetyAnalyzer:
                 showscale=True,
                 colorbar=dict(
                     title="Safety Signal<br>Strength",
-                    titleside="right",
                     tickmode="linear",
                     tick0=min(differences),
                     dtick=(max(differences) - min(differences)) / 5

@@ -535,7 +535,7 @@ class SafetyJudgeTrainer:
         run_advanced = self.config.get('run_advanced_mi', False)
         if self.advanced_analyzer and run_advanced:
             try:
-                print("   🧠 Running advanced MI analysis (this may take a minute)...")
+                print("   Running advanced MI analysis (this may take a minute)...")
                 
                 # Get limited samples for neuron analysis - already limited in advanced_analysis.py
                 safe_prompts = [s['prompt'] for s in self.val_dataset.data if s['label'] == 1][:20]

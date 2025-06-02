@@ -427,7 +427,7 @@ class EnhancedRouter:
 def demo_martian_integration(guardian_judge, tokenizer):
     """Demo script showing Martian integration"""
     
-    print("🚀 Guardian-Loop + Martian Integration Demo\n")
+    print("Guardian-Loop + Martian Integration Demo\n")
     
     # Initialize integration
     martian = MartianIntegration()

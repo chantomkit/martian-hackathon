@@ -14,125 +14,179 @@ import seaborn as sns
 from tqdm import tqdm
 from transformers import AutoTokenizer
 import pandas as pd
+from torch.utils.data import DataLoader
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
 
 from models.safety_judge import SafetyJudge, SafetyJudgeConfig
 from mi_tools.advanced_analysis import AdvancedSafetyAnalyzer, create_training_evolution_visualization
+from train_safety_judge import SafetyDataset  # Reuse the same dataset class
 
 
 class SafetyJudgeEvaluator:
     """Comprehensive evaluator for the safety judge model"""
     
-    def __init__(self, model, tokenizer):
+    def __init__(self, model, tokenizer, test_dataset):
         self.model = model
         self.tokenizer = tokenizer
+        self.test_dataset = test_dataset
         self.device = next(model.parameters()).device
         
-    def evaluate_dataset(self, test_data_path: str, use_log_probs: bool = True):
-        """Evaluate model on a test dataset"""
+        # Create dataloader using same approach as training
+        self.test_loader = self._create_dataloader(test_dataset, shuffle=False)
         
-        # Load test data
-        with open(test_data_path, 'r') as f:
-            test_data = json.load(f)
-        
-        print(f"Evaluating on {len(test_data)} samples...")
-        
-        predictions = []
-        true_labels = []
-        confidences = []
-        log_prob_diffs = []
-        failed_predictions = []  # For MI analysis
-        
-        # Make predictions
-        for item in tqdm(test_data, desc="Evaluating"):
-            prompt = item['prompt']
-            true_label = item['label']  # 1 = safe, 0 = unsafe
+    def _create_dataloader(self, dataset, shuffle=False):
+        """Create a DataLoader identical to training"""
+        def collate_fn(batch):
+            # Pad sequences in batch
+            max_len = max(len(item['input_ids']) for item in batch)
             
-            if use_log_probs:
-                # Use log probability method
-                is_safe, confidence, log_data = self.model.predict_with_logprobs(
-                    prompt, self.tokenizer
-                )
-                pred_label = 1 if is_safe else 0
-                log_prob_diffs.append(log_data['log_prob_difference'])
-            else:
-                # Use standard method
-                is_safe, confidence = self.model.predict(prompt, self.tokenizer)
-                pred_label = 1 if is_safe else 0
+            input_ids = []
+            attention_mask = []
+            labels = []
+            raw_labels = []
             
-            predictions.append(pred_label)
-            true_labels.append(true_label)
-            confidences.append(confidence)
+            for item in batch:
+                # Pad input_ids and attention_mask
+                pad_len = max_len - len(item['input_ids'])
+                input_ids.append(torch.cat([
+                    item['input_ids'],
+                    torch.zeros(pad_len, dtype=torch.long).fill_(self.tokenizer.pad_token_id)
+                ]))
+                attention_mask.append(torch.cat([
+                    item['attention_mask'],
+                    torch.zeros(pad_len)
+                ]))
+                
+                # Pad labels
+                labels.append(torch.cat([
+                    item['labels'],
+                    torch.full((pad_len,), -100, dtype=torch.long)
+                ]))
+                
+                raw_labels.append(item['raw_label'])
             
-            # Track failures for MI analysis
-            if pred_label != true_label:
-                failed_predictions.append((prompt, true_label, pred_label))
+            return {
+                'input_ids': torch.stack(input_ids).to(self.device),
+                'attention_mask': torch.stack(attention_mask).to(self.device),
+                'labels': torch.stack(labels).to(self.device),
+                'raw_labels': torch.tensor(raw_labels).to(self.device)
+            }
         
-        # Calculate metrics
-        metrics = self._calculate_metrics(true_labels, predictions, confidences)
-        
-        # Add log probability analysis if available
-        if log_prob_diffs:
-            metrics['log_prob_analysis'] = self._analyze_log_probs(
-                log_prob_diffs, true_labels, predictions
-            )
-        
-        return metrics, {
-            'predictions': predictions,
-            'true_labels': true_labels,
-            'confidences': confidences,
-            'log_prob_diffs': log_prob_diffs,
-            'failed_predictions': failed_predictions
-        }
-    
-    def _calculate_metrics(self, y_true, y_pred, confidences):
-        """Calculate comprehensive evaluation metrics"""
-        
-        # Basic metrics
-        accuracy = accuracy_score(y_true, y_pred)
-        precision, recall, f1, _ = precision_recall_fscore_support(
-            y_true, y_pred, average='binary', pos_label=0  # 0 = unsafe (positive class)
+        return DataLoader(
+            dataset,
+            batch_size=8,  # Same as training
+            shuffle=shuffle,
+            collate_fn=collate_fn,
+            num_workers=0
         )
         
-        # Calculate AUC if we have confidence scores
-        try:
-            # Convert to unsafe probabilities for AUC (1 - safe_confidence)
-            unsafe_probs = [1 - conf if pred == 1 else conf 
-                           for pred, conf in zip(y_pred, confidences)]
-            auc = roc_auc_score(y_true, unsafe_probs)
-        except:
-            auc = None
+    def evaluate_dataset(self):
+        """Evaluate model on test dataset using same approach as training validation"""
         
-        # Confusion matrix
-        cm = confusion_matrix(y_true, y_pred)
+        print(f"Evaluating on {len(self.test_dataset)} samples...")
         
-        # Per-class accuracy
-        safe_correct = cm[1, 1] / (cm[1, 0] + cm[1, 1]) if (cm[1, 0] + cm[1, 1]) > 0 else 0
-        unsafe_correct = cm[0, 0] / (cm[0, 0] + cm[0, 1]) if (cm[0, 0] + cm[0, 1]) > 0 else 0
+        self.model.eval()
+        total_loss = 0
+        all_preds = []
+        all_probs = []
+        all_labels = []
+        all_log_prob_diffs = []
         
-        # False positive/negative rates
-        fpr = cm[1, 0] / (cm[1, 0] + cm[1, 1]) if (cm[1, 0] + cm[1, 1]) > 0 else 0
-        fnr = cm[0, 1] / (cm[0, 0] + cm[0, 1]) if (cm[0, 0] + cm[0, 1]) > 0 else 0
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(tqdm(self.test_loader, desc="Evaluating")):
+                # Forward pass - identical to training validation
+                outputs = self.model(
+                    input_ids=batch['input_ids'],
+                    attention_mask=batch['attention_mask'],
+                    labels=batch['labels']
+                )
+                
+                loss = outputs['loss']
+                total_loss += loss.item()
+                
+                # Get predictions from logits - identical to training
+                logits = outputs['logits']
+                true_false_logits = logits[:, [self.test_dataset.true_token_id, self.test_dataset.false_token_id]]
+                probs = torch.softmax(true_false_logits, dim=-1)
+                preds = (probs[:, 0] > 0.5).long()
+                
+                # Calculate log prob differences for analysis
+                log_probs = torch.log_softmax(true_false_logits, dim=-1)
+                log_prob_diff = log_probs[:, 0] - log_probs[:, 1]  # log P(True) - log P(False)
+                
+                # Store results
+                all_preds.extend(preds.cpu().numpy())
+                all_probs.extend(probs[:, 0].cpu().numpy())  # Probability of True/safe
+                all_labels.extend(batch['raw_labels'].cpu().numpy())
+                all_log_prob_diffs.extend(log_prob_diff.cpu().numpy())
+                
+                # Clear memory periodically
+                if batch_idx % 10 == 0:
+                    del outputs, logits, probs, preds, loss
+                    torch.cuda.empty_cache()
         
-        # Confidence calibration
-        calibration = self._calculate_calibration(y_true, y_pred, confidences)
+        # Calculate metrics using same method as training
+        metrics = self._calculate_metrics(all_labels, all_preds, all_probs)
+        metrics['loss'] = total_loss / len(self.test_loader)
         
-        return {
+        # Add log probability analysis
+        metrics['log_prob_analysis'] = self._analyze_log_probs(
+            all_log_prob_diffs, all_labels, all_preds
+        )
+        
+        # Prepare raw results for visualization
+        raw_results = {
+            'predictions': all_preds,
+            'true_labels': all_labels,
+            'confidences': all_probs,
+            'log_prob_diffs': all_log_prob_diffs,
+            'failed_predictions': self._get_failed_predictions(all_labels, all_preds)
+        }
+        
+        return metrics, raw_results
+    
+    def _calculate_metrics(self, labels, preds, probs=None):
+        """Calculate evaluation metrics - identical to training"""
+        accuracy = accuracy_score(labels, preds)
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            labels, preds, average='binary', pos_label=1  # 1 = safe
+        )
+        
+        metrics = {
             'accuracy': accuracy,
             'precision': precision,
             'recall': recall,
-            'f1': f1,
-            'auc': auc,
+            'f1': f1
+        }
+        
+        # Add AUC if probabilities available
+        if probs is not None:
+            try:
+                auc = roc_auc_score(labels, probs)
+                metrics['auc'] = auc
+            except:
+                metrics['auc'] = 0.0
+        
+        # Additional metrics for evaluation
+        cm = confusion_matrix(labels, preds)
+        safe_correct = cm[1, 1] / (cm[1, 0] + cm[1, 1]) if (cm[1, 0] + cm[1, 1]) > 0 else 0
+        unsafe_correct = cm[0, 0] / (cm[0, 0] + cm[0, 1]) if (cm[0, 0] + cm[0, 1]) > 0 else 0
+        fpr = cm[1, 0] / (cm[1, 0] + cm[1, 1]) if (cm[1, 0] + cm[1, 1]) > 0 else 0
+        fnr = cm[0, 1] / (cm[0, 0] + cm[0, 1]) if (cm[0, 0] + cm[0, 1]) > 0 else 0
+        
+        metrics.update({
             'confusion_matrix': cm.tolist(),
             'safe_accuracy': safe_correct,
             'unsafe_accuracy': unsafe_correct,
             'false_positive_rate': fpr,
             'false_negative_rate': fnr,
-            'calibration': calibration,
-            'avg_confidence': np.mean(confidences)
-        }
+            'avg_confidence': np.mean(probs) if probs is not None else 0,
+            'calibration': self._calculate_calibration(labels, preds, probs) if probs is not None else 0
+        })
+        
+        return metrics
     
     def _analyze_log_probs(self, log_prob_diffs, y_true, y_pred):
         """Analyze log probability distributions"""
@@ -173,6 +227,16 @@ class SafetyJudgeEvaluator:
                 ece += np.abs(avg_confidence_in_bin - accuracy_in_bin) * prop_in_bin
         
         return ece
+    
+    def _get_failed_predictions(self, true_labels, predictions):
+        """Get failed predictions for MI analysis"""
+        failed = []
+        for i, (true_label, pred) in enumerate(zip(true_labels, predictions)):
+            if true_label != pred:
+                # Get the original prompt from dataset
+                prompt = self.test_dataset.data[i]['prompt']
+                failed.append((prompt, true_label, pred))
+        return failed
     
     def visualize_results(self, metrics, raw_results, output_dir: Path):
         """Create visualizations of evaluation results"""
@@ -254,14 +318,10 @@ class SafetyJudgeEvaluator:
         print(f"📊 Visualizations saved to {output_dir}")
 
 
-def perform_advanced_mi_analysis(model, tokenizer, test_data_path: str, output_dir: Path):
+def perform_advanced_mi_analysis(model, tokenizer, test_dataset, test_data, output_dir: Path):
     """Perform advanced mechanistic interpretability analysis"""
     
-    print("\n🧠 Starting Advanced Mechanistic Interpretability Analysis...")
-    
-    # Load test data for analysis
-    with open(test_data_path, 'r') as f:
-        test_data = json.load(f)
+    print("\nStarting Advanced Mechanistic Interpretability Analysis...")
     
     # Separate safe and unsafe samples
     safe_samples = [item['prompt'] for item in test_data if item['label'] == 1][:50]
@@ -289,9 +349,9 @@ def perform_advanced_mi_analysis(model, tokenizer, test_data_path: str, output_d
     circuit_diagram.write_html(str(mi_viz_dir / 'safety_circuits.html'))
     
     # 4. Analyze failure modes
-    # Get failed predictions from evaluation
-    evaluator = SafetyJudgeEvaluator(model, tokenizer)
-    _, raw_results = evaluator.evaluate_dataset(test_data_path)
+    # Get failed predictions from evaluation - reuse the test_dataset
+    evaluator = SafetyJudgeEvaluator(model, tokenizer, test_dataset)
+    _, raw_results = evaluator.evaluate_dataset()
     failure_analysis = analyzer.analyze_failure_modes(raw_results['failed_predictions'])
     
     # 5. Export analysis
@@ -325,31 +385,40 @@ def main():
     parser.add_argument('--output_dir', type=str,
                        default='./outputs/evaluation',
                        help='Output directory for results')
-    parser.add_argument('--use_log_probs', action='store_true', default=True,
-                       help='Use log probability method for predictions')
     parser.add_argument('--skip_mi_analysis', action='store_true',
                        help='Skip advanced MI analysis')
     args = parser.parse_args()
     
-    # Load model
+    # Load model checkpoint
     print(f"Loading model from {args.model_path}...")
-    checkpoint = torch.load(args.model_path, map_location='cpu')
+    checkpoint = torch.load(args.model_path, map_location='cpu', weights_only=False)
     config = checkpoint.get('model_config', SafetyJudgeConfig())
+    
+    # Load tokenizer first (same as training)
+    tokenizer = AutoTokenizer.from_pretrained(config.base_model)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+    
+    # Load model
     model = SafetyJudge(config)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     
-    # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(config.base_model)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    # Load test data
+    print(f"Loading test data from {args.test_data}...")
+    with open(args.test_data, 'r') as f:
+        test_data = json.load(f)
+    
+    # Create test dataset using same approach as training
+    test_dataset = SafetyDataset(test_data, tokenizer, config)
     
     # Create evaluator
-    evaluator = SafetyJudgeEvaluator(model, tokenizer)
+    evaluator = SafetyJudgeEvaluator(model, tokenizer, test_dataset)
     
     # Run evaluation
     print("\n🔍 Running evaluation...")
-    metrics, raw_results = evaluator.evaluate_dataset(args.test_data, args.use_log_probs)
+    metrics, raw_results = evaluator.evaluate_dataset()
     
     # Print results
     print("\n📊 Evaluation Results:")
@@ -385,17 +454,17 @@ def main():
     
     # Save detailed predictions for analysis
     predictions_df = pd.DataFrame({
-        'prompt': [item['prompt'] for item in json.load(open(args.test_data))],
+        'prompt': [item['prompt'] for item in test_data],
         'true_label': raw_results['true_labels'],
         'predicted_label': raw_results['predictions'],
         'confidence': raw_results['confidences'],
-        'log_prob_diff': raw_results['log_prob_diffs'] if raw_results['log_prob_diffs'] else [None] * len(raw_results['predictions'])
+        'log_prob_diff': raw_results['log_prob_diffs']
     })
     predictions_df.to_csv(output_dir / 'detailed_predictions.csv', index=False)
     
     # Perform advanced MI analysis
     if not args.skip_mi_analysis:
-        mi_results = perform_advanced_mi_analysis(model, tokenizer, args.test_data, output_dir)
+        mi_results = perform_advanced_mi_analysis(model, tokenizer, test_dataset, test_data, output_dir)
         
         # Add MI results to metrics
         metrics['mi_analysis'] = mi_results

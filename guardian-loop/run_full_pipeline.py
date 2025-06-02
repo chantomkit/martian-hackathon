@@ -17,7 +17,7 @@ from huggingface_hub import login
 def run_command(cmd, description):
     """Run a command with nice output"""
     print(f"\n{'='*60}")
-    print(f"🚀 {description}")
+    print(f"{description}")
     print(f"{'='*60}")
     print(f"Command: {cmd}\n")
     
@@ -64,7 +64,7 @@ def main():
     args = parser.parse_args()
     
     print("""
-    🛡️  Guardian-Loop Full Pipeline Runner
+    Guardian-Loop Full Pipeline Runner
     ====================================
     This will run:
     1. Data preparation (with mutations)
@@ -82,7 +82,7 @@ def main():
         print("    6. Open-Ended adversarial testing")
     
     if args.run_advanced_mi:
-        print("    🧠 Advanced MI analysis: ENABLED (will be slower)")
+        print("    Advanced MI analysis: ENABLED (will be slower)")
     
     print("")
     
@@ -105,27 +105,11 @@ def main():
             "python guardian-loop/src/data/prepare_safety_data.py",
             "Preparing safety datasets"
         )
-        
-        # Prepare feasibility data
-        run_command(
-            "python guardian-loop/src/data/prepare_feasibility_data.py",
-            "Preparing feasibility datasets"
-        )
-        
-        print("\n📊 Dataset Statistics:")
-        print("Safety Dataset:")
-        print("   - Train: data/safety/train.json")
-        print("   - Val: data/safety/val.json")
-        print("   - Test: data/safety/test.json")
-        print("\nFeasibility Dataset:")
-        print("   - Train: data/feasibility/train.json")
-        print("   - Val: data/feasibility/val.json")
-        print("   - Test: data/feasibility/test.json")
     
     # Step 2: Training
     if not args.skip_training and not args.demo_only and not args.eval_only:
         cmd = ("python guardian-loop/src/train_safety_judge.py --batch_size 8 --gradient_accumulation_steps 4 "
-               "--learning_rate 2e-4 --num_epochs 15 --freeze_layers 20")
+               "--learning_rate 2e-4 --num_epochs 20 --freeze_layers 20")
         
         if args.visualize_training:
             cmd += " --visualize_during_training --visualization_interval 1"
@@ -135,11 +119,11 @@ def main():
             
         run_command(
             cmd,
-            "Training safety judge on prepared data (optimized for 8K samples)"
+            "Training safety judge on prepared data"
         )
         
         if args.visualize_training:
-            print("\n📊 Training visualizations saved to: outputs/checkpoints/training_visualizations/")
+            print("\nTraining visualizations saved to: outputs/checkpoints/training_visualizations/")
             print("   Visualizations are generated for EVERY epoch when --visualize-training is enabled!")
             print("   Open the HTML files to see how the model evolved during training!")
     
@@ -152,7 +136,7 @@ def main():
         )
         
         # MI visualizations
-        print("\n🔬 Generating Mechanistic Interpretability visualizations...")
+        print("\nGenerating Mechanistic Interpretability visualizations...")
         
         # Token attribution heatmaps
         run_command(
@@ -172,7 +156,7 @@ def main():
             "Visualizing layer activations"
         )
         
-        print("\n📁 MI visualizations saved to: outputs/mi_visualizations/")
+        print("\nMI visualizations saved to: outputs/mi_visualizations/")
     
     # Step 4: Martian Integration Test
     if not args.demo_only and not args.eval_only:
@@ -183,7 +167,7 @@ def main():
     
     # Step 5: Interactive Demo
     if not args.eval_only:
-        print("\n🎯 Launching interactive demo...")
+        print("\nLaunching interactive demo...")
         print("   This includes:")
         print("   - Safety analysis interface")
         print("   - MI visualization viewer")
@@ -206,7 +190,7 @@ def main():
     
     # Step 6: Open-Ended Adversarial Testing (Optional)
     if not args.skip_open_ended and not args.demo_only and not args.eval_only:
-        print("\n🌈 Open-Ended Adversarial Testing")
+        print("\nOpen-Ended Adversarial Testing")
         print("   This will:")
         print("   - Generate adversarial prompts")
         print("   - Test model robustness")
@@ -217,7 +201,7 @@ def main():
             "Running Open-Ended adversarial testing"
         )
         
-        print("\n📁 Open-Ended results saved to: outputs/open_ended/")
+        print("\nOpen-Ended results saved to: outputs/open_ended/")
     
     # Summary
     total_time = time.time() - start_time
@@ -225,7 +209,7 @@ def main():
     print(f"✅ Pipeline completed in {total_time/60:.1f} minutes")
     print(f"{'='*60}")
     
-    print("\n📊 Key Outputs:")
+    print("\nKey Outputs:")
     print("   - Trained model: outputs/checkpoints/best_model.pt")
     print("   - Evaluation results: outputs/evaluation/")
     print("   - MI visualizations: outputs/mi_visualizations/")
@@ -238,7 +222,7 @@ def main():
     
     print("   - Demo available at: http://localhost:8501")
     
-    print("\n🚀 Next Steps:")
+    print("\nNext Steps:")
     print("   1. Review evaluation metrics")
     print("   2. Explore MI visualizations")
     

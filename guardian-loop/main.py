@@ -65,7 +65,7 @@ def train_judge(use_existing=False):
         print(f"\n✅ Using existing checkpoint: {checkpoint_path}")
         return str(checkpoint_path)
     
-    print("\n🧠 Training safety judge...")
+    print("\nTraining safety judge...")
     
     # Prepare training arguments - OPTIMIZED FOR 8K DATASET
     train_args = [
@@ -191,9 +191,9 @@ python demo.py --mode all
 ## Features
 
 - 🔍 **Safety Analysis**: Test prompts for safety violations
-- 🧠 **Mechanistic Interpretability**: Visualize decision-making process
+- **Mechanistic Interpretability**: Visualize decision-making process
 - 🌈 **Adversarial Testing**: Discover model vulnerabilities
-- 🚀 **Martian Integration**: Efficient router pre-filtering
+- **Martian Integration**: Efficient router pre-filtering
 
 Built for the Apart x Martian Hackathon 🏆
 """
@@ -244,7 +244,7 @@ def main():
     
     if args.stage in ['all', 'demo'] and model_path:
         create_demo_package(model_path)
-        print("\n🚀 To run the demo:")
+        print("\nTo run the demo:")
         print("   cd guardian_loop_demo")
         print("   streamlit run demo.py")
     

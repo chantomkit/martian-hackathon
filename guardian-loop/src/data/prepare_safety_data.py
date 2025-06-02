@@ -936,7 +936,7 @@ def prepare_safety_data(base_dir: str = './data'):
     # Initialize the dataset preparer
     preparer = SafetyDatasetPreparer()
     preparer.prepare_dataset(
-        total_dataset_size=500,  # Total samples across all splits, originally 10000, set to 10 for debugging
+        total_dataset_size=5000,  # Total samples across all splits, originally 10000, set to 10 for debugging
         train_split=0.8,           # 80% for training (8000 samples)
         balance_ratio=0.5,         # 50% safe, 50% unsafe
         use_mutations=False        # Disabled for now

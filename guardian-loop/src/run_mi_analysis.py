@@ -22,7 +22,7 @@ def run_comprehensive_mi_analysis(model_path: str, output_dir: str):
     """Run comprehensive MI analysis on a trained safety judge"""
     
     print("""
-    🧠 Guardian-Loop Advanced Mechanistic Interpretability Analysis
+    Guardian-Loop Advanced Mechanistic Interpretability Analysis
     ==============================================================
     
     This analysis will:
@@ -195,7 +195,7 @@ def run_comprehensive_mi_analysis(model_path: str, output_dir: str):
         print(f"     Activation difference: {top_neuron.safe_vs_unsafe_difference:.3f}")
         print(f"     Top tokens: {', '.join(top_neuron.top_activating_tokens[:3])}")
     
-    print(f"\n🎯 View the interactive visualizations by opening the HTML files in your browser!")
+    print(f"\nView the interactive visualizations by opening the HTML files in your browser!")
     print(f"   Recommended viewing order:")
     print(f"   1. neuron_activation_map.html - See which neurons detect unsafe content")
     print(f"   2. safety_circuits.html - Trace the computational pathways")

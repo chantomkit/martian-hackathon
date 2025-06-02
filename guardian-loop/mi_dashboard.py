@@ -38,10 +38,15 @@ with st.expander("📖 About Guardian-Loop", expanded=True):
     - Trained on multiple safety datasets (WildGuard, BeaverTails, ToxicChat, etc.)
     
     ### 2. 🔬 Mechanistic Interpretability (MI)
-    - **Token Attribution**: Shows which words trigger safety concerns
-    - **Layer Activations**: Visualizes how different model layers respond
-    - **Circuit Analysis**: Compares processing pathways for safe vs unsafe content
-    - **Neuron Mapping**: Identifies specific neurons specialized for safety detection
+    
+    **Standard MI Analysis (runs every epoch or at specified intervals):**
+    - **Token Attribution Heatmaps**: Shows which words trigger safety concerns for multiple validation samples
+    - **Layer Activation Patterns**: Visualizes how different model layers respond for each sample
+    - **Circuit Comparison**: Compares processing pathways between safe vs unsafe prompts
+    - **Training Progress**: Tracks accuracy, F1 score, and loss across epochs
+    
+    **Advanced MI Analysis (optional, slower but more detailed):**
+    - **Neuron Activation Maps**: Identifies specific neurons specialized for safety detection
     - **Circuit Diagrams**: Maps information flow through safety detection circuits
     
     ### 3. Open-Ended Adversarial Testing
@@ -81,23 +86,30 @@ def load_visualizations_by_epoch(viz_dir: Path) -> Dict[int, Dict[str, Path]]:
         epoch = parse_epoch_from_filename(file.name)
         if epoch is not None:
             if epoch not in epochs:
-                epochs[epoch] = {}
+                epochs[epoch] = {
+                    'token_attributions': [],  # List of sample files
+                    'layer_activations': [],   # List of sample files
+                    'circuit_comparison': None,
+                    'neuron_map': None,
+                    'circuit_diagram': None
+                }
             
-            # Categorize by type
-            if 'tokens' in file.name:
-                viz_type = 'token_attribution'
-            elif 'layers' in file.name:
-                viz_type = 'layer_activation'
+            # Categorize by type based on actual file naming
+            if '_tokens.html' in file.name:
+                epochs[epoch]['token_attributions'].append(file)
+            elif '_layers.html' in file.name:
+                epochs[epoch]['layer_activations'].append(file)
             elif 'circuit_comparison' in file.name:
-                viz_type = 'circuit_comparison'
+                epochs[epoch]['circuit_comparison'] = file
             elif 'neuron_map' in file.name:
-                viz_type = 'neuron_map'
-            elif 'circuits' in file.name and 'comparison' not in file.name:
-                viz_type = 'circuit_diagram'
-            else:
-                continue
-            
-            epochs[epoch][viz_type] = file
+                epochs[epoch]['neuron_map'] = file
+            elif '_circuits.html' in file.name and 'comparison' not in file.name:
+                epochs[epoch]['circuit_diagram'] = file
+    
+    # Sort sample files for consistent ordering
+    for epoch in epochs:
+        epochs[epoch]['token_attributions'].sort()
+        epochs[epoch]['layer_activations'].sort()
     
     return epochs
 
@@ -195,7 +207,7 @@ with col1:
                                           help="Accumulate gradients over N steps (effective batch = batch_size × this)")
 
 with col2:
-    st.subheader("🎯 Optimization")
+    st.subheader("Optimization")
     learning_rate = st.number_input("Learning Rate", min_value=1e-6, max_value=1e-2, value=2e-4, format="%.6f",
                                    help="Learning rate for training (default: 2e-4)")
     weight_decay = st.number_input("Weight Decay", min_value=0.0, max_value=0.1, value=0.01, format="%.3f",
@@ -220,7 +232,7 @@ st.info("📊 **Note:** MI visualizations are automatically generated every epoc
 col1, col2, col3 = st.columns([1, 1, 3])
 
 with col1:
-    if st.button("🚀 Start Training", type="primary", 
+    if st.button("Start Training", type="primary", 
                  disabled=(st.session_state.training_process is not None or not data_prepared)):
         if not data_prepared:
             st.error("Cannot start training - data not prepared!")
@@ -341,8 +353,6 @@ if epochs_data:
         This heatmap reveals which words (tokens) in the input prompt most influence the model's safety classification decision.
         
         **How to interpret:**
-        - 🔴 **Red tokens** → Words that push the model toward classifying as "unsafe"
-        - 🔵 **Blue tokens** → Words that push the model toward classifying as "safe"
         - **Color intensity** → Stronger colors mean higher influence on the decision
         - **White/neutral** → Words that don't significantly affect the classification
         
@@ -354,10 +364,27 @@ if epochs_data:
         **Example:** In "How to make a bomb", the word "bomb" would likely be bright red, while "How" might be neutral.
         """)
     
-    if 'token_attribution' in epoch_visualizations:
-        display_visualization_iframe(epoch_visualizations['token_attribution'], height=600)
+    if 'token_attributions' in epoch_visualizations and epoch_visualizations['token_attributions']:
+        st.info(f"📌 Showing {len(epoch_visualizations['token_attributions'])} sample visualizations from validation set")
+        
+        # Create tabs for different samples
+        sample_files = epoch_visualizations['token_attributions']
+        if len(sample_files) > 1:
+            tab_names = []
+            for i, file in enumerate(sample_files):
+                # Extract label from filename (safe/unsafe)
+                label = "unsafe" if "unsafe" in file.name else "safe"
+                tab_names.append(f"Sample {i+1} ({label})")
+            
+            tabs = st.tabs(tab_names)
+            for i, (tab, file) in enumerate(zip(tabs, sample_files)):
+                with tab:
+                    display_visualization_iframe(file, height=900)
+        else:
+            # Single sample
+            display_visualization_iframe(sample_files[0], height=900)
     else:
-        st.warning("No token attribution visualization for this epoch")
+        st.warning("No token attribution visualizations for this epoch")
     
     st.divider()
     
@@ -385,10 +412,27 @@ if epochs_data:
         - Consistent patterns across epochs indicate stable safety detection mechanisms
         """)
     
-    if 'layer_activation' in epoch_visualizations:
-        display_visualization_iframe(epoch_visualizations['layer_activation'], height=700)
+    if 'layer_activations' in epoch_visualizations and epoch_visualizations['layer_activations']:
+        st.info(f"📌 Showing {len(epoch_visualizations['layer_activations'])} sample visualizations from validation set")
+        
+        # Create tabs for different samples
+        sample_files = epoch_visualizations['layer_activations']
+        if len(sample_files) > 1:
+            tab_names = []
+            for i, file in enumerate(sample_files):
+                # Extract label from filename (safe/unsafe)
+                label = "unsafe" if "unsafe" in file.name else "safe"
+                tab_names.append(f"Sample {i+1} ({label})")
+            
+            tabs = st.tabs(tab_names)
+            for i, (tab, file) in enumerate(zip(tabs, sample_files)):
+                with tab:
+                    display_visualization_iframe(file, height=900)
+        else:
+            # Single sample
+            display_visualization_iframe(sample_files[0], height=900)
     else:
-        st.warning("No layer activation visualization for this epoch")
+        st.warning("No layer activation visualizations for this epoch")
     
     st.divider()
     
@@ -420,8 +464,8 @@ if epochs_data:
         **Ideal pattern**: Early divergence that remains high, with low similarity in later layers.
         """)
     
-    if 'circuit_comparison' in epoch_visualizations:
-        display_visualization_iframe(epoch_visualizations['circuit_comparison'], height=900)
+    if epoch_visualizations.get('circuit_comparison'):
+        display_visualization_iframe(epoch_visualizations['circuit_comparison'], height=1000)
     else:
         st.warning("No circuit comparison visualization for this epoch")
     
@@ -457,10 +501,10 @@ if epochs_data:
         - Consistent patterns across training indicate robust safety mechanisms
         """)
     
-    if 'neuron_map' in epoch_visualizations:
-        display_visualization_iframe(epoch_visualizations['neuron_map'], height=800)
+    if epoch_visualizations.get('neuron_map'):
+        display_visualization_iframe(epoch_visualizations['neuron_map'], height=900)
     else:
-        st.warning("No neuron map visualization for this epoch")
+        st.warning("No neuron map visualization for this epoch. Enable 'Advanced MI Analysis' during training to generate this visualization.")
     
     st.divider()
     
@@ -491,10 +535,36 @@ if epochs_data:
         **Example:** A circuit might flow: L20_N5 → L21_N12 → L22_N3, forming a pathway that detects violent content.
         """)
     
-    if 'circuit_diagram' in epoch_visualizations:
-        display_visualization_iframe(epoch_visualizations['circuit_diagram'], height=800)
+    if epoch_visualizations.get('circuit_diagram'):
+        display_visualization_iframe(epoch_visualizations['circuit_diagram'], height=900)
     else:
-        st.warning("No circuit diagram visualization for this epoch")
+        st.warning("No circuit diagram visualization for this epoch. Enable 'Advanced MI Analysis' during training to generate this visualization.")
+    
+    # Training Progress Summary
+    st.divider()
+    st.subheader("📈 Training Progress Summary")
+    
+    training_progress_file = viz_dir / 'training_progress.html'
+    if training_progress_file.exists():
+        with st.expander("📚 Understanding Training Progress", expanded=False):
+            st.markdown("""
+            **What does this visualization show?**
+            
+            This chart tracks key metrics across all training epochs:
+            - **Accuracy** (blue): How often the model correctly classifies prompts
+            - **F1 Score** (green): Balance between precision and recall
+            - **Loss** (red, right axis): Training error (lower is better)
+            
+            **What to look for:**
+            - Steady improvement in accuracy and F1 score
+            - Decreasing loss over time
+            - Plateaus might indicate the model has converged
+            - Sudden drops might indicate overfitting
+            """)
+        
+        display_visualization_iframe(training_progress_file, height=500)
+    else:
+        st.info("Training progress visualization will appear after training completes.")
 
 else:
     # No visualizations yet
@@ -509,7 +579,7 @@ with st.expander("ℹ️ What is Open-Ended?", expanded=False):
     st.markdown("""
     **Open-Ended** is an open-ended adversarial prompt generation system that:
     
-    - 🎯 **Discovers vulnerabilities** by generating adversarial prompts that fool the safety judge
+    - **Discovers vulnerabilities** by generating adversarial prompts that fool the safety judge
     - 🧬 **Uses mutations** to explore the space of possible harmful prompts
     - 📊 **Maintains an archive** of successful attacks organized by risk category and evasion technique
     - 🔄 **Can retrain the model** on discovered vulnerabilities to improve robustness
@@ -668,7 +738,7 @@ fig.write_html('temp_analysis.html')
                 # Show visualization
                 if Path('temp_analysis.html').exists():
                     st.subheader("Token Attribution Analysis")
-                    display_visualization_iframe(Path('temp_analysis.html'), height=600)
+                    display_visualization_iframe(Path('temp_analysis.html'), height=900)
             else:
                 st.error(f"Analysis failed. Error: {result.stderr}")
                 if result.stdout:

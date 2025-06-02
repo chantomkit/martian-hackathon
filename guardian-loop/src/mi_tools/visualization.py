@@ -170,9 +170,15 @@ class SafetyJudgeMIVisualizer:
             colorscale='RdBu_r',
             zmid=0,
             text=[[f"{token}<br>{score:.3f}" for token, score in zip(tokens, norm_scores)]],
-            texttemplate="%{text}",
+            texttemplate="",  # Remove text from cells
             textfont={"size": 10},
-            colorbar=dict(title="Attribution<br>Score"),
+            colorbar=dict(
+                title="Attribution<br>Score",
+                thickness=15,
+                len=0.5,  # Make colorbar half the height
+                yanchor="middle",
+                y=0.5
+            ),
             hovertemplate='Token: %{text}<br>Score: %{z:.3f}<extra></extra>'
         ))
         
@@ -188,28 +194,32 @@ class SafetyJudgeMIVisualizer:
                 tickangle=-45
             ),
             yaxis_title="",
-            height=500,  # Increased height
+            height=800,  # Increased height for taller plot
             showlegend=False,
             hovermode='closest',
             plot_bgcolor='white',
             paper_bgcolor='white',
             font=dict(color='black', size=12),
-            margin=dict(t=150, b=200, l=100, r=100),  # Increased margins
+            margin=dict(t=250, b=200, l=100, r=100),  # Increased top margin for full prompt
             annotations=[
                 dict(
-                    text=f"<b>Input prompt:</b> {text[:100]}{'...' if len(text) > 100 else ''}",
+                    text=f"<b>Input prompt:</b><br>{text}",  # Show full prompt
                     showarrow=False,
                     xref="paper", yref="paper",
-                    x=0.5, y=1.15,
+                    x=0.5, y=1.05,
                     xanchor="center",
                     font=dict(size=12),
-                    align="center"
+                    align="center",
+                    bordercolor="#c7c7c7",
+                    borderwidth=1,
+                    borderpad=10,
+                    bgcolor="rgba(255,255,255,0.9)"
                 ),
                 dict(
                     text=f"<b>Prediction:</b> {'UNSAFE' if prediction == 0 else 'SAFE'} (confidence: {confidence:.1%})",
                     showarrow=False,
                     xref="paper", yref="paper",
-                    x=0.5, y=-0.35,  # Moved down more
+                    x=0.5, y=-0.25,  # Moved down more
                     xanchor="center",
                     font=dict(size=14, color='red' if prediction == 0 else 'green'),
                     align="center"
@@ -323,14 +333,30 @@ class SafetyJudgeMIVisualizer:
         ))
         
         fig.update_layout(
-            title=f"Top 15 Attention Heads for Safety Detection<br><sub>Full prompt: {text}</sub>",
+            title=f"Top 15 Attention Heads for Safety Detection",
             xaxis_title="Attention Head",
             yaxis_title="Average Attention to Safety Patterns",
             xaxis_tickangle=-45,
-            height=500,
+            height=700,  # Increased height
             plot_bgcolor='white',
             paper_bgcolor='white',
-            font=dict(color='black')
+            font=dict(color='black'),
+            margin=dict(t=250, b=100),  # Increased top margin for full prompt
+            annotations=[
+                dict(
+                    text=f"<b>Analyzing prompt:</b><br>{text}",  # Show full prompt
+                    showarrow=False,
+                    xref="paper", yref="paper",
+                    x=0.5, y=1.05,
+                    xanchor="center",
+                    font=dict(size=12),
+                    align="center",
+                    bordercolor="#c7c7c7",
+                    borderwidth=1,
+                    borderpad=10,
+                    bgcolor="rgba(255,255,255,0.9)"
+                )
+            ]
         )
         
         return fig, head_importance
@@ -402,21 +428,25 @@ class SafetyJudgeMIVisualizer:
             title=f"Layer-wise Activation Analysis",
             xaxis_title="Layer",
             yaxis_title="Activation Magnitude",
-            height=500,
+            height=700,  # Increased height
             showlegend=True,
             plot_bgcolor='white',
             paper_bgcolor='white',
             font=dict(color='black'),
-            margin=dict(t=150, b=100),  # More margin for text
+            margin=dict(t=250, b=100),  # More margin for full prompt
             annotations=[
                 dict(
-                    text=f"<b>Analyzing prompt:</b><br>{text[:150]}{'...' if len(text) > 150 else ''}",
+                    text=f"<b>Analyzing prompt:</b><br>{text}",  # Show full prompt
                     showarrow=False,
                     xref="paper", yref="paper",
-                    x=0.5, y=1.2,
+                    x=0.5, y=1.05,
                     xanchor="center",
                     font=dict(size=12),
-                    align="center"
+                    align="center",
+                    bordercolor="#c7c7c7",
+                    borderwidth=1,
+                    borderpad=10,
+                    bgcolor="rgba(255,255,255,0.9)"
                 )
             ]
         )
@@ -529,31 +559,31 @@ class SafetyJudgeMIVisualizer:
         fig.update_layout(
             title=dict(
                 text="Safety Circuit Analysis: Safe vs Unsafe Prompts",
-                y=0.98,
+                y=0.95,
                 x=0.5,
                 xanchor='center',
                 yanchor='top'
             ),
-            height=800,  # Increased height
+            height=900,  # Increased height
             showlegend=True,
             plot_bgcolor='white',
             paper_bgcolor='white',
             font=dict(color='black'),
-            margin=dict(t=200, b=100, l=100, r=100)  # Increased top margin
+            margin=dict(t=300, b=100, l=100, r=100)  # Increased top margin for full prompts
         )
         
         # Add text boxes with full prompts - moved to avoid overlap
         fig.add_annotation(
-            text=f"<b>Safe prompt:</b> {safe_prompt[:80]}{'...' if len(safe_prompt) > 80 else ''}<br>"
-                 f"<b>Unsafe prompt:</b> {unsafe_prompt[:80]}{'...' if len(unsafe_prompt) > 80 else ''}",
+            text=f"<b>Safe prompt:</b><br>{safe_prompt}<br><br><b>Unsafe prompt:</b><br>{unsafe_prompt}",  # Show full prompts
             xref="paper", yref="paper",
-            x=0.5, y=1.08,  # Moved to top center
+            x=0.5, y=1.05,  # Moved to top center
             showarrow=False,
             bgcolor="rgba(255,255,255,0.9)",
             bordercolor="black",
             borderwidth=1,
-            font=dict(size=10),
-            align='center',
+            borderpad=10,
+            font=dict(size=11),
+            align='left',
             xanchor='center',
             yanchor='bottom'
         )
@@ -789,7 +819,7 @@ if __name__ == "__main__":
             print(f"   Saved: {output_path.name} - {data['prediction']} ({data['confidence']:.1%})")
     
     if args.mode in ['attention_patterns', 'all']:
-        print("\n🧠 Analyzing attention patterns...")
+        print("\nAnalyzing attention patterns...")
         for i, prompt in enumerate(test_prompts):
             fig, _ = visualizer.analyze_attention_heads(prompt)
             output_path = output_dir / f"attention_patterns_{i}.html"
